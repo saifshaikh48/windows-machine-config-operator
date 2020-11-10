@@ -14,7 +14,7 @@ import (
 	"github.com/openshift/windows-machine-config-operator/version"
 	"github.com/pkg/errors"
 	"golang.org/x/crypto/ssh"
-	"k8s.io/api/core/v1"
+	core "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
@@ -43,7 +43,7 @@ type nodeConfig struct {
 	// Windows holds the information related to the windows VM
 	windows.Windows
 	// Node holds the information related to node object
-	node *v1.Node
+	node *core.Node
 	// network holds the network information specific to the node
 	network *network
 	// clusterServiceCIDR holds the service CIDR for cluster

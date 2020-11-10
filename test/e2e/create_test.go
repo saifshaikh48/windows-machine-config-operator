@@ -11,7 +11,6 @@ import (
 	framework "github.com/operator-framework/operator-sdk/pkg/test"
 	"github.com/pkg/errors"
 	"github.com/stretchr/testify/require"
-	"k8s.io/api/core/v1"
 	core "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -105,7 +104,7 @@ func (tc *testContext) createWindowsMachineSet(replicas int32, windowsLabel bool
 // immediately, else we will wait for the duration given by nodeCreationTime variable which is 20 minutes increasing
 // the overall wait time in test suite
 func (tc *testContext) waitForWindowsNodes(nodeCount int32, waitForAnnotations, expectError, checkVersion bool) error {
-	var nodes *v1.NodeList
+	var nodes *core.NodeList
 	annotations := []string{nodeconfig.HybridOverlaySubnet, nodeconfig.HybridOverlayMac, nodeconfig.VersionAnnotation}
 	var creationTime time.Duration
 	startTime := time.Now()

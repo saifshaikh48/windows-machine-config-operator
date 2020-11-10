@@ -13,7 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
-	v1 "k8s.io/api/core/v1"
+	core "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 )
@@ -102,7 +102,7 @@ func testEastWestNetworking(t *testing.T) {
 			require.NoError(t, err, "could not retrieve pod with selector %v", *winServerDeployment.Spec.Selector)
 
 			// Create a clusterIP service which can be used to reach the Windows webserver
-			intermediarySVC, err := testCtx.createService(winServerDeployment.Name, v1.ServiceTypeClusterIP, *winServerDeployment.Spec.Selector)
+			intermediarySVC, err := testCtx.createService(winServerDeployment.Name, core.ServiceTypeClusterIP, *winServerDeployment.Spec.Selector)
 			require.NoError(t, err, "could not create service")
 			defer testCtx.deleteService(intermediarySVC.Name)
 
@@ -168,7 +168,7 @@ func testNorthSouthNetworking(t *testing.T) {
 // getThroughLoadBalancer does a GET request to the given webserver through a load balancer service
 func (tc *testContext) getThroughLoadBalancer(webserver *appsv1.Deployment) error {
 	// Create a load balancer svc to expose the webserver
-	loadBalancer, err := tc.createService(webserver.Name, v1.ServiceTypeLoadBalancer, *webserver.Spec.Selector)
+	loadBalancer, err := tc.createService(webserver.Name, core.ServiceTypeLoadBalancer, *webserver.Spec.Selector)
 	if err != nil {
 		return errors.Wrap(err, "could not create load balancer for Windows Server")
 	}
@@ -212,16 +212,16 @@ func retryGET(url string) (*http.Response, error) {
 }
 
 // createService creates a new service of type serviceType for pods matching the label selector
-func (tc *testContext) createService(name string, serviceType v1.ServiceType, selector metav1.LabelSelector) (*v1.Service, error) {
-	svcSpec := &v1.Service{
+func (tc *testContext) createService(name string, serviceType core.ServiceType, selector metav1.LabelSelector) (*core.Service, error) {
+	svcSpec := &core.Service{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: name,
 		},
-		Spec: v1.ServiceSpec{
+		Spec: core.ServiceSpec{
 			Type: serviceType,
-			Ports: []v1.ServicePort{
+			Ports: []core.ServicePort{
 				{
-					Protocol: v1.ProtocolTCP,
+					Protocol: core.ProtocolTCP,
 					Port:     80,
 				},
 			},
@@ -231,8 +231,8 @@ func (tc *testContext) createService(name string, serviceType v1.ServiceType, se
 }
 
 // waitForLoadBalancerIngress waits until the load balancer has an external hostname ready
-func (tc *testContext) waitForLoadBalancerIngress(name string) (*v1.Service, error) {
-	var svc *v1.Service
+func (tc *testContext) waitForLoadBalancerIngress(name string) (*core.Service, error) {
+	var svc *core.Service
 	var err error
 	for i := 0; i < retryCount; i++ {
 		svc, err = tc.kubeclient.CoreV1().Services(tc.workloadNamespace).Get(context.TODO(), name, metav1.GetOptions{})
@@ -254,16 +254,16 @@ func (tc *testContext) deleteService(name string) error {
 }
 
 // getAffinityForNode returns an affinity which matches the associated node's name
-func getAffinityForNode(node *v1.Node) (*v1.Affinity, error) {
-	return &v1.Affinity{
-		NodeAffinity: &v1.NodeAffinity{
-			RequiredDuringSchedulingIgnoredDuringExecution: &v1.NodeSelector{
-				NodeSelectorTerms: []v1.NodeSelectorTerm{
+func getAffinityForNode(node *core.Node) (*core.Affinity, error) {
+	return &core.Affinity{
+		NodeAffinity: &core.NodeAffinity{
+			RequiredDuringSchedulingIgnoredDuringExecution: &core.NodeSelector{
+				NodeSelectorTerms: []core.NodeSelectorTerm{
 					{
-						MatchFields: []v1.NodeSelectorRequirement{
+						MatchFields: []core.NodeSelectorRequirement{
 							{
 								Key:      "metadata.name",
-								Operator: v1.NodeSelectorOpIn,
+								Operator: core.NodeSelectorOpIn,
 								Values:   []string{node.Name},
 							},
 						},
@@ -276,7 +276,7 @@ func getAffinityForNode(node *v1.Node) (*v1.Affinity, error) {
 
 // createNamespace creates a namespace with the provided name
 func (tc *testContext) createNamespace(name string) error {
-	ns := &v1.Namespace{
+	ns := &core.Namespace{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: name,
 		},
@@ -291,7 +291,7 @@ func (tc *testContext) deleteNamespace(name string) error {
 }
 
 // deployWindowsWebServer creates a deployment with a single Windows Server pod, listening on port 80
-func (tc *testContext) deployWindowsWebServer(name string, affinity *v1.Affinity) (*appsv1.Deployment, error) {
+func (tc *testContext) deployWindowsWebServer(name string, affinity *core.Affinity) (*appsv1.Deployment, error) {
 	// This will run a Server on the container, which can be reached with a GET request
 	winServerCommand := []string{"pwsh.exe", "-command",
 		"$listener = New-Object System.Net.HttpListener; $listener.Prefixes.Add('http://*:80/'); $listener.Start(); " +
@@ -349,7 +349,7 @@ func (tc *testContext) getWindowsServerContainerImage() string {
 }
 
 // createWindowsServerDeployment creates a deployment with a Windows Server 2019 container
-func (tc *testContext) createWindowsServerDeployment(name string, command []string, affinity *v1.Affinity) (*appsv1.Deployment, error) {
+func (tc *testContext) createWindowsServerDeployment(name string, command []string, affinity *core.Affinity) (*appsv1.Deployment, error) {
 	deploymentsClient := tc.kubeclient.AppsV1().Deployments(tc.workloadNamespace)
 	replicaCount := int32(1)
 	windowsServerImage := tc.getWindowsServerContainerImage()
@@ -365,38 +365,38 @@ func (tc *testContext) createWindowsServerDeployment(name string, command []stri
 					"app": name,
 				},
 			},
-			Template: v1.PodTemplateSpec{
+			Template: core.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels: map[string]string{
 						"app": name,
 					},
 				},
-				Spec: v1.PodSpec{
+				Spec: core.PodSpec{
 					Affinity: affinity,
-					Tolerations: []v1.Toleration{
+					Tolerations: []core.Toleration{
 						{
 							Key:    "os",
 							Value:  "Windows",
-							Effect: v1.TaintEffectNoSchedule,
+							Effect: core.TaintEffectNoSchedule,
 						},
 					},
-					Containers: []v1.Container{
+					Containers: []core.Container{
 						// Windows web server
 						{
 							Name:            name,
 							Image:           windowsServerImage,
-							ImagePullPolicy: v1.PullIfNotPresent,
+							ImagePullPolicy: core.PullIfNotPresent,
 							// The default user for nanoserver image is ContainerUser.
 							// Change user to ContainerAdministrator to run HttpListener in admin mode.
-							SecurityContext: &v1.SecurityContext{
-								WindowsOptions: &v1.WindowsSecurityContextOptions{
+							SecurityContext: &core.SecurityContext{
+								WindowsOptions: &core.WindowsSecurityContextOptions{
 									RunAsUserName: &containerUserName,
 								},
 							},
 							Command: command,
-							Ports: []v1.ContainerPort{
+							Ports: []core.ContainerPort{
 								{
-									Protocol:      v1.ProtocolTCP,
+									Protocol:      core.ProtocolTCP,
 									ContainerPort: 80,
 								},
 							},
@@ -440,13 +440,13 @@ func (tc *testContext) waitUntilDeploymentScaled(name string) error {
 }
 
 // getPodEvents gets all events for any pod with the input in its name. Used for debugging purposes
-func (tc *testContext) getPodEvents(name string) ([]v1.Event, error) {
+func (tc *testContext) getPodEvents(name string) ([]core.Event, error) {
 	eventList, err := tc.kubeclient.CoreV1().Events(tc.workloadNamespace).List(context.TODO(), metav1.ListOptions{
 		FieldSelector: "involvedObject.kind=Pod"})
 	if err != nil {
-		return []v1.Event{}, err
+		return []core.Event{}, err
 	}
-	var podEvents []v1.Event
+	var podEvents []core.Event
 	for _, event := range eventList.Items {
 		if strings.Contains(event.InvolvedObject.Name, name) {
 			podEvents = append(podEvents, event)
@@ -458,11 +458,11 @@ func (tc *testContext) getPodEvents(name string) ([]v1.Event, error) {
 // createLinuxJob creates a job which will run the provided command with a ubi8 image
 func (tc *testContext) createLinuxJob(name string, command []string) (*batchv1.Job, error) {
 	linuxNodeSelector := map[string]string{"beta.kubernetes.io/os": "linux"}
-	return tc.createJob(name, ubi8Image, command, linuxNodeSelector, []v1.Toleration{}, nil)
+	return tc.createJob(name, ubi8Image, command, linuxNodeSelector, []core.Toleration{}, nil)
 }
 
 //  createWinCurlerJob creates a Job to curl Windows server at given IP address
-func (tc *testContext) createWinCurlerJob(name string, winServerIP string, affinity *v1.Affinity) (*batchv1.Job, error) {
+func (tc *testContext) createWinCurlerJob(name string, winServerIP string, affinity *core.Affinity) (*batchv1.Job, error) {
 	winCurlerCommand := getWinCurlerCommand(winServerIP)
 	winCurlerJob, err := tc.createWindowsServerJob("win-curler-"+name, winCurlerCommand, affinity)
 	return winCurlerJob, err
@@ -480,32 +480,32 @@ func getWinCurlerCommand(winServerIP string) []string {
 }
 
 // createWindowsServerJob creates a job which will run the provided command with a Windows Server image
-func (tc *testContext) createWindowsServerJob(name string, command []string, affinity *v1.Affinity) (*batchv1.Job, error) {
+func (tc *testContext) createWindowsServerJob(name string, command []string, affinity *core.Affinity) (*batchv1.Job, error) {
 	windowsNodeSelector := map[string]string{"beta.kubernetes.io/os": "windows"}
-	windowsTolerations := []v1.Toleration{{Key: "os", Value: "Windows", Effect: v1.TaintEffectNoSchedule}}
+	windowsTolerations := []core.Toleration{{Key: "os", Value: "Windows", Effect: core.TaintEffectNoSchedule}}
 	windowsServerImage := tc.getWindowsServerContainerImage()
 	return tc.createJob(name, windowsServerImage, command, windowsNodeSelector, windowsTolerations, affinity)
 }
 
 // createJob creates a job on the cluster using the given parameters
 func (tc *testContext) createJob(name, image string, command []string, selector map[string]string,
-	tolerations []v1.Toleration, affinity *v1.Affinity) (*batchv1.Job, error) {
+	tolerations []core.Toleration, affinity *core.Affinity) (*batchv1.Job, error) {
 	jobsClient := tc.kubeclient.BatchV1().Jobs(tc.workloadNamespace)
 	job := &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: name + "-job",
 		},
 		Spec: batchv1.JobSpec{
-			Template: v1.PodTemplateSpec{
-				Spec: v1.PodSpec{
+			Template: core.PodTemplateSpec{
+				Spec: core.PodSpec{
 					Affinity:      affinity,
-					RestartPolicy: v1.RestartPolicyNever,
+					RestartPolicy: core.RestartPolicyNever,
 					Tolerations:   tolerations,
-					Containers: []v1.Container{
+					Containers: []core.Container{
 						{
 							Name:            name,
 							Image:           image,
-							ImagePullPolicy: v1.PullIfNotPresent,
+							ImagePullPolicy: core.PullIfNotPresent,
 							Command:         command,
 						},
 					},
