@@ -1,0 +1,10 @@
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: windows-instances
+  namespace: openshift-windows-machine-config-operator
+data:
+  # 10.1.42.1: |-
+  #   username=Administrator
+  # instance.dns.com: |-
+  #   username=core

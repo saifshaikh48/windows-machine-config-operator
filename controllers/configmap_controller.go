@@ -49,7 +49,6 @@ const (
 	// UsernameAnnotation is a node annotation that contains the username used to log into the Windows instance
 	UsernameAnnotation = "windowsmachineconfig.openshift.io/username"
 	// InstanceConfigMap is the name of the ConfigMap where VMs to be configured should be described.
-	// TODO: Possibly make this a singleton that WMCO creates https://issues.redhat.com/browse/WINC-612
 	InstanceConfigMap = "windows-instances"
 )
 
