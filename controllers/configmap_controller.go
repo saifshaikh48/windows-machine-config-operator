@@ -213,8 +213,16 @@ func (r *ConfigMapReconciler) ensureInstanceIsConfigured(instance *instances.Ins
 		}
 	}
 
-	if err := r.configureInstance(instance, map[string]string{BYOHAnnotation: "true",
-		UsernameAnnotation: instance.Username}); err != nil {
+	// Encrypt username using private key secret
+	privateKeyBytes, err := secrets.GetPrivateKey(kubeTypes.NamespacedName{Namespace: r.watchNamespace,
+		Name: secrets.PrivateKeySecret}, r.client)
+	usernameCipherText, err := secrets.Encrypt(instance.Username, privateKeyBytes)
+	if err != nil {
+		return errors.Wrapf(err, "unable to encrypt username for instance %s", instance.Address)
+	}
+
+	if err = r.configureInstance(instance, map[string]string{BYOHAnnotation: "true",
+		UsernameAnnotation: usernameCipherText}); err != nil {
 		return errors.Wrap(err, "error configuring node")
 	}
 

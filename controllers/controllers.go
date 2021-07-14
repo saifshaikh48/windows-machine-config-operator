@@ -7,6 +7,7 @@ import (
 	"github.com/pkg/errors"
 	"golang.org/x/crypto/ssh"
 	core "k8s.io/api/core/v1"
+	kubeTypes "k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -16,6 +17,7 @@ import (
 	"github.com/openshift/windows-machine-config-operator/pkg/instances"
 	"github.com/openshift/windows-machine-config-operator/pkg/metrics"
 	"github.com/openshift/windows-machine-config-operator/pkg/nodeconfig"
+	"github.com/openshift/windows-machine-config-operator/pkg/secrets"
 	"github.com/openshift/windows-machine-config-operator/version"
 )
 
@@ -58,14 +60,28 @@ func (r *instanceReconciler) configureInstance(instance *instances.InstanceInfo,
 // instanceFromNode returns an instance object for the given node. Requires a username that can be used to SSH into the
 // instance to be annotated on the node.
 func (r *instanceReconciler) instanceFromNode(node *core.Node) (*instances.InstanceInfo, error) {
-	if node.Annotations[UsernameAnnotation] == "" {
+	usernameAnnotation := node.Annotations[UsernameAnnotation]
+	if usernameAnnotation == "" {
 		return nil, errors.New("node is missing valid username annotation")
 	}
 	addr, err := GetAddress(node.Status.Addresses)
 	if err != nil {
 		return nil, err
 	}
-	return instances.NewInstanceInfo(addr, node.Annotations[UsernameAnnotation], ""), nil
+
+	// Decypt username annotation to plain text using private key
+	privateKeyBytes, err := secrets.GetPrivateKey(kubeTypes.NamespacedName{Namespace: r.watchNamespace,
+		Name: secrets.PrivateKeySecret}, r.client)
+	if err != nil {
+		return nil, err
+	}
+
+	decryptedUsername, err := secrets.Decrypt(usernameAnnotation, privateKeyBytes)
+	if err != nil {
+		return nil, errors.Wrapf(err, "unable to decrypt username annotation for node %s", node.Name)
+	}
+
+	return instances.NewInstanceInfo(addr, decryptedUsername, ""), nil
 }
 
 // GetAddress returns a non-ipv6 address that can be used to reach a Windows node. This can be either an ipv4
