@@ -1,21 +1,17 @@
-package controllers
+package instances
 
 import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"github.com/openshift/windows-machine-config-operator/pkg/instances"
 )
 
 func TestParseHosts(t *testing.T) {
-	r := ConfigMapReconciler{}
-
 	testCases := []struct {
 		name        string
 		input       map[string]string
-		expectedOut []*instances.InstanceInfo
+		expectedOut []*InstanceInfo
 		expectedErr bool
 	}{
 		{
@@ -45,25 +41,25 @@ func TestParseHosts(t *testing.T) {
 		{
 			name:        "valid dns address",
 			input:       map[string]string{"localhost": "username=core"},
-			expectedOut: []*instances.InstanceInfo{{Address: "localhost", Username: "core"}},
+			expectedOut: []*InstanceInfo{{Address: "localhost", Username: "core"}},
 			expectedErr: false,
 		},
 		{
 			name:        "valid ip address",
 			input:       map[string]string{"127.0.0.1": "username=core"},
-			expectedOut: []*instances.InstanceInfo{{Address: "127.0.0.1", Username: "core"}},
+			expectedOut: []*InstanceInfo{{Address: "127.0.0.1", Username: "core"}},
 			expectedErr: false,
 		},
 		{
 			name:        "valid dns and ip addresses",
 			input:       map[string]string{"localhost": "username=core", "127.0.0.1": "username=Admin"},
-			expectedOut: []*instances.InstanceInfo{{Address: "localhost", Username: "core"}, {Address: "127.0.0.1", Username: "Admin"}},
+			expectedOut: []*InstanceInfo{{Address: "localhost", Username: "core"}, {Address: "127.0.0.1", Username: "Admin"}},
 			expectedErr: false,
 		},
 	}
 	for _, test := range testCases {
 		t.Run(test.name, func(t *testing.T) {
-			out, err := r.parseHosts(test.input)
+			out, err := ParseHosts(test.input)
 			if test.expectedErr {
 				assert.Error(t, err)
 				return
