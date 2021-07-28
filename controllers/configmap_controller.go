@@ -123,7 +123,7 @@ func (r *ConfigMapReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 // of Nodes in the cluster, as each instance returned will contain a reference to its associated Node, if it has one
 // in the given NodeList. If an instance does not have an associated node from the NodeList, the node reference will
 // be nil.
-func (r *ConfigMapReconciler) parseInstances(configMapData map[string]string, nodes *core.NodeList) ([]*instances.InstanceInfo, error) {
+func parseInstances(configMapData map[string]string, nodes *core.NodeList) ([]*instances.InstanceInfo, error) {
 	if nodes == nil {
 		return nil, errors.New("nodes cannot be nil")
 	}
@@ -175,7 +175,7 @@ func (r *ConfigMapReconciler) reconcileNodes(ctx context.Context, windowsInstanc
 	}
 
 	// Get the list of instances that are expected to be Nodes
-	instances, err := r.parseInstances(windowsInstances.Data, nodes)
+	instances, err := parseInstances(windowsInstances.Data, nodes)
 	if err != nil {
 		return errors.Wrap(err, "unable to parse hosts from ConfigMap")
 	}
