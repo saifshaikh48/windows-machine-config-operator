@@ -134,14 +134,14 @@ func parseInstances(configMapData map[string]string, nodes *core.NodeList) ([]*i
 		if err := validateAddress(address); err != nil {
 			return nil, errors.Wrapf(err, "invalid address %s", address)
 		}
-		splitData := strings.SplitN(data, "=", 2)
-		if len(splitData) == 0 || splitData[0] != "username" {
-			return instanceList, errors.Errorf("data for entry %s has an incorrect format", address)
+		username, err := extractUsernameFromEntry(data)
+		if err != nil {
+			return instanceList, errors.Wrapf(err, "unable to get username for %s", address)
 		}
 
 		// Get the associated node if the described instance has one
 		node, _ := findNode(address, nodes)
-		instanceList = append(instanceList, instances.NewInstanceInfo(address, splitData[1], "", node))
+		instanceList = append(instanceList, instances.NewInstanceInfo(address, username, "", node))
 	}
 	return instanceList, nil
 }
@@ -165,6 +165,29 @@ func validateAddress(address string) error {
 		return errors.Errorf("DNS did not resolve to an address")
 	}
 	return nil
+}
+
+// getNodeUsername retrieves the username associated with the given node from the instance ConfigMap data
+func getNodeUsername(configMapData map[string]string, node *core.Node) (string, error) {
+	if node == nil {
+		return "", errors.New("cannot get username for nil node")
+	}
+	// Find entry in ConfigMap that is associated to node via address
+	for _, address := range node.Status.Addresses {
+		if data, found := configMapData[address.Address]; found {
+			return extractUsernameFromEntry(data)
+		}
+	}
+	return "", errors.Errorf("unable to find instance associated with node %s", node.GetName())
+}
+
+// extractUsernameFromEntry returns the username string from data in the form username=<username>
+func extractUsernameFromEntry(value string) (string, error) {
+	splitData := strings.SplitN(value, "=", 2)
+	if len(splitData) == 0 || splitData[0] != "username" {
+		return "", errors.New("data has an incorrect format")
+	}
+	return splitData[1], nil
 }
 
 // reconcileNodes corrects the discrepancy between the "expected" instances, and the "actual" Node list
