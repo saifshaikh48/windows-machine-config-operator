@@ -200,9 +200,20 @@ func (r *ConfigMapReconciler) reconcileNodes(ctx context.Context, windowsInstanc
 
 // ensureInstancesAreUpToDate configures all instances that require configuration
 func (r *ConfigMapReconciler) ensureInstancesAreUpToDate(instances []*instances.InstanceInfo) error {
+	// Get private key to encrypt instance usernames
+	privateKeyBytes, err := secrets.GetPrivateKey(kubeTypes.NamespacedName{Namespace: r.watchNamespace,
+		Name: secrets.PrivateKeySecret}, r.client)
+	if err != nil {
+		return err
+	}
 	for _, instance := range instances {
-		err := r.ensureInstanceIsUpToDate(instance, map[string]string{nodeconfig.WorkerLabel: ""},
-			map[string]string{BYOHAnnotation: "true", UsernameAnnotation: instance.Username})
+		encryptedUsername, err := encryptUsername(instance.Username, privateKeyBytes)
+		if err != nil {
+			return errors.Wrapf(err, "unable to encrypt username for instance %s", instance.Address)
+		}
+
+		err = r.ensureInstanceIsUpToDate(instance, map[string]string{nodeconfig.WorkerLabel: ""},
+			map[string]string{BYOHAnnotation: "true", UsernameAnnotation: encryptedUsername})
 		if err != nil {
 			// It is better to return early like this, instead of trying to configure as many instances as possible in a
 			// single reconcile call, as it simplifies error collection. The order the map is read from is
