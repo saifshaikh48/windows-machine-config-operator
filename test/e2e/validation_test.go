@@ -35,7 +35,7 @@ func testNodeMetadata(t *testing.T) {
 	clusterKubeletVersion, err := tc.getClusterKubeVersion()
 	require.NoError(t, err, "could not get cluster kube version")
 
-	pubKey, err := tc.getExpectedPublicKey()
+	_, pubKey, err := tc.getExpectedKeyPair()
 	require.NoError(t, err, "error getting the expected public key")
 	pubKeyAnnotation := nc.CreatePubKeyHashAnnotation(pubKey)
 
