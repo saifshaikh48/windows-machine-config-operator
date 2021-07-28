@@ -49,7 +49,7 @@ func TestWMCO(t *testing.T) {
 	t.Run("create", creationTestSuite)
 	t.Run("network", testNetwork)
 	t.Run("upgrade", upgradeTestSuite)
-	t.Run("reconfigure", reconfigurationTest)
+	t.Run("reconfigure", reconfigurationTestSuite)
 	t.Run("destroy", deletionTestSuite)
 }
 

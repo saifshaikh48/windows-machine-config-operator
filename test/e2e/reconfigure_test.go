@@ -12,6 +12,11 @@ import (
 	"github.com/openshift/windows-machine-config-operator/pkg/metadata"
 )
 
+func reconfigurationTestSuite(t *testing.T) {
+	t.Run("Reconfigure instance", reconfigurationTest)
+	t.Run("Change private key", testPrivateKeyChange)
+}
+
 // reconfigurationTest tests that the correct behavior occurs when a previously configured instance is configured
 // again. In practice, this exact scenario should not happen, however it simulates a similar scenario where an instance
 // was almost completely configured, an error occurred, and the instance is requeued. This is a scenario that should be
