@@ -8,8 +8,10 @@ import (
 	"strings"
 
 	mapi "github.com/openshift/machine-api-operator/pkg/apis/machine/v1beta1"
+	operatorframework "github.com/operator-framework/api/pkg/operators/v1"
 	"github.com/operator-framework/operator-lib/leader"
 	"github.com/spf13/pflag"
+	meta "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -20,6 +22,7 @@ import (
 
 	"github.com/openshift/windows-machine-config-operator/controllers"
 	"github.com/openshift/windows-machine-config-operator/pkg/cluster"
+	"github.com/openshift/windows-machine-config-operator/pkg/conditions"
 	"github.com/openshift/windows-machine-config-operator/pkg/metrics"
 	"github.com/openshift/windows-machine-config-operator/pkg/nodeconfig/payload"
 	"github.com/openshift/windows-machine-config-operator/version"
@@ -158,6 +161,15 @@ func main() {
 		setupLog.Error(err, "WMCO has an invalid target namespace. "+
 			"OperatorGroup target namespace must be a single, non-cluster-scoped value", "target namespace",
 			watchNamespace)
+		os.Exit(1)
+	}
+
+	// Set default OperatorCondition Upgradable to True. Needed as OLM treats the absence of a condition as opting out
+	// https://olm.operatorframework.io/docs/advanced-tasks/communicating-operator-conditions-to-olm/#setting-defaults
+	err = conditions.SetUpgradeable(mgr.GetClient(), meta.ConditionTrue, conditions.UpgradeableTrueMessage,
+		conditions.UpgradeableTrueReason)
+	if err != nil {
+		setupLog.Error(err, "failed to set OperatorCondition", "type", operatorframework.Upgradeable)
 		os.Exit(1)
 	}
 
