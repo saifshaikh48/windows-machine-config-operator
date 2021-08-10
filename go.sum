@@ -516,6 +516,7 @@ github.com/openshift/machine-api-operator v0.2.1-0.20200611014855-9a69f85c32dd/g
 github.com/openshift/machine-api-operator v0.2.1-0.20200701225707-950912b03628/go.mod h1:cxjy/RUzv5C2T5FNl1KKXUgtakWsezWQ642B/CD9VQA=
 github.com/openshift/machine-api-operator v0.2.1-0.20200722104429-f4f9b84df9b7 h1:jeLZ5Ng+Ri42dbZveN1ofrrRsUnYusauzeXPDTnXQfE=
 github.com/openshift/machine-api-operator v0.2.1-0.20200722104429-f4f9b84df9b7/go.mod h1:XDsNRAVEJtkI00e51SAZ/PnqNJl1zv0rHXSdl9L1oOY=
+github.com/operator-framework/api v0.5.2 h1:NLgOoi70+iyz4vVJeeJUKaFT8wZaCbCHzS1eExCqX7A=
 github.com/operator-framework/api v0.5.2/go.mod h1:L7IvLd/ckxJEJg/t4oTTlnHKAJIP/p51AvEslW3wYdY=
 github.com/operator-framework/operator-lib v0.4.0 h1:g7tGRo+FikHgFZDmRdHkOxyTv3sViI+Ujiqbfd9Tfsk=
 github.com/operator-framework/operator-lib v0.4.0/go.mod h1:kOjV7h01DCSw3RZAqYdHyHyVwuJL8hvG53tSZoDZfsQ=

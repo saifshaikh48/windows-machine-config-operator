@@ -201,8 +201,12 @@ github.com/openshift/machine-api-operator/pkg/apis/machine/v1beta1
 github.com/openshift/machine-api-operator/pkg/apis/vsphereprovider/v1beta1
 github.com/openshift/machine-api-operator/pkg/generated/clientset/versioned/scheme
 github.com/openshift/machine-api-operator/pkg/generated/clientset/versioned/typed/machine/v1beta1
+# github.com/operator-framework/api v0.5.2
+## explicit
+github.com/operator-framework/api/pkg/operators/v1
 # github.com/operator-framework/operator-lib v0.4.0
 ## explicit
+github.com/operator-framework/operator-lib/conditions
 github.com/operator-framework/operator-lib/internal/utils
 github.com/operator-framework/operator-lib/leader
 # github.com/peterbourgon/diskv v2.0.1+incompatible
