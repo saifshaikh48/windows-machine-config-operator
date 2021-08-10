@@ -36,6 +36,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	"github.com/openshift/windows-machine-config-operator/pkg/cluster"
+	"github.com/openshift/windows-machine-config-operator/pkg/conditions"
 	"github.com/openshift/windows-machine-config-operator/pkg/crypto"
 	"github.com/openshift/windows-machine-config-operator/pkg/instance"
 	"github.com/openshift/windows-machine-config-operator/pkg/metrics"
@@ -94,6 +95,13 @@ func NewConfigMapReconciler(mgr manager.Manager, clusterConfig cluster.Config, w
 func (r *ConfigMapReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	_ = r.log.WithValues("configmap", req.NamespacedName)
 
+	// Update operator condition to prevent OLM from updating WMCO while BYOH nodes are being processed
+	if err := conditions.PatchUpgradeable(r.client, r.watchNamespace, meta.ConditionFalse,
+		conditions.UpgradeableFalseMessage, conditions.UpgradeableFalseReason); err != nil {
+		// We do not want to return an error, since this is not a critical operation?
+		r.log.Info("unable to set Upgradeable condition, be cautious of automatic operator upgrades", "error", err)
+	}
+
 	var err error
 	// Create a new signer using the private key that the instances will be configured with
 	r.signer, err = signer.Create(kubeTypes.NamespacedName{Namespace: r.watchNamespace,
@@ -115,7 +123,15 @@ func (r *ConfigMapReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		}
 	}
 
-	return ctrl.Result{}, r.reconcileNodes(ctx, configMap)
+	if err := r.reconcileNodes(ctx, configMap); err != nil {
+		return ctrl.Result{}, err
+	}
+	// Communicate current operator condition Upgradeable=True to allow OLM to update WMCO if needed
+	if err := conditions.PatchUpgradeable(r.client, r.watchNamespace, meta.ConditionTrue,
+		conditions.UpgradeableTrueMessage, conditions.UpgradeableTrueReason); err != nil {
+		r.log.Info("unable to set Upgradeable condition, manual operator upgrade may be needed", "error", err)
+	}
+	return ctrl.Result{}, nil
 }
 
 // reconcileNodes corrects the discrepancy between the "expected" instances, and the "actual" Node list

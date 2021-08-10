@@ -22,6 +22,7 @@ import (
 	"github.com/pkg/errors"
 	certificates "k8s.io/api/certificates/v1"
 	k8sapierrors "k8s.io/apimachinery/pkg/api/errors"
+	meta "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -31,6 +32,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	"github.com/openshift/windows-machine-config-operator/pkg/cluster"
+	"github.com/openshift/windows-machine-config-operator/pkg/conditions"
 	"github.com/openshift/windows-machine-config-operator/pkg/csr"
 )
 
@@ -71,19 +73,39 @@ func NewCertificateSigningRequestsReconciler(mgr manager.Manager, clusterConfig 
 func (r *certificateSigningRequestsReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	_ = r.log.WithValues("certificatesigningrequests", req.NamespacedName)
 
+	// Update operator condition to prevent OLM from updating WMCO while CSRs are being processed
+	if err := conditions.PatchUpgradeable(r.client, r.watchNamespace, meta.ConditionFalse,
+		conditions.UpgradeableFalseMessage, conditions.UpgradeableFalseReason); err != nil {
+		// We do not want to return an error, since this is not a critical operation?
+		r.log.Info("unable to set Upgradeable condition, be cautious of automatic operator upgrades", "error", err)
+	}
+
 	certificateSigningRequest := &certificates.CertificateSigningRequest{}
 	if err := r.client.Get(ctx, req.NamespacedName, certificateSigningRequest); err != nil {
 		if k8sapierrors.IsNotFound(err) {
 			// Request object not found, could have been deleted after reconcile request.
 			// Owned objects are automatically garbage collected. For additional cleanup logic use finalizers.
 			// Return and don't requeue
+			// Communicate current operator condition Upgradeable=True to allow OLM to update WMCO if needed
+			if err := conditions.PatchUpgradeable(r.client, r.watchNamespace, meta.ConditionTrue, conditions.UpgradeableTrueMessage,
+				conditions.UpgradeableTrueReason); err != nil {
+				r.log.Info("unable to set Upgradeable condition, manual operator upgrade may be needed", "error", err)
+			}
 			return ctrl.Result{}, nil
 		}
 		// Error reading the object - requeue the request.
 		return ctrl.Result{}, err
 	}
 
-	return ctrl.Result{}, r.reconcileCSR(certificateSigningRequest)
+	if err := r.reconcileCSR(certificateSigningRequest); err != nil {
+		return ctrl.Result{}, err
+	}
+	// Communicate current operator condition Upgradeable=True to allow OLM to update WMCO if needed
+	if err := conditions.PatchUpgradeable(r.client, r.watchNamespace, meta.ConditionTrue, conditions.UpgradeableTrueMessage,
+		conditions.UpgradeableTrueReason); err != nil {
+		r.log.Info("unable to set Upgradeable condition, manual operator upgrade may be needed", "error", err)
+	}
+	return ctrl.Result{}, nil
 }
 
 // reconcileCSR handles the CSR validation and approval

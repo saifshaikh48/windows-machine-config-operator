@@ -170,3 +170,13 @@ rules:
   - securitycontextconstraints
   verbs:
   - use
+- apiGroups:
+  - operators.coreos.com
+  resources:
+  - operatorconditions
+  verbs:
+  - get
+  - list
+  - watch
+  - update
+  - patch
