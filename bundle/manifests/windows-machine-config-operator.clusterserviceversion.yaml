@@ -339,7 +339,7 @@ spec:
                       fieldPath: metadata.name
                 - name: OPERATOR_NAME
                   value: windows-machine-config-operator
-                image: REPLACE_IMAGE
+                image: quay.io/mohashai/wmco:0.0.1
                 imagePullPolicy: IfNotPresent
                 name: manager
                 resources: {}
