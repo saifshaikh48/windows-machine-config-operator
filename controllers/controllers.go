@@ -62,9 +62,8 @@ func (r *instanceReconciler) ensureInstanceIsUpToDate(instance *instances.Instan
 			instance.Node.GetAnnotations()[metadata.VersionAnnotation])
 
 		// If not already done, set operator condition Upgradeable=True to allow OLM to update WMCO if needed
-		err := conditions.SetUpgradeable(r.client, meta.ConditionTrue, conditions.UpgradeableTrueMessage,
-			conditions.UpgradeableTrueReason)
-		if err != nil {
+		if err := conditions.SetUpgradeableCond(r.client, r.watchNamespace, meta.ConditionTrue,
+			conditions.UpgradeableTrueMessage, conditions.UpgradeableTrueReason); err != nil {
 			return err
 		}
 
@@ -81,9 +80,8 @@ func (r *instanceReconciler) ensureInstanceIsUpToDate(instance *instances.Instan
 	// configured again.
 	if instance.UpgradeRequired() {
 		// Set operator condition Upgradeable=False to prevent OLM from updating WMCO while nodes are being updated
-		err := conditions.SetUpgradeable(r.client, meta.ConditionFalse, conditions.UpgradeableFalseMessage,
-			conditions.UpgradeableFalseReason)
-		if err != nil {
+		if err := conditions.SetUpgradeableCond(r.client, r.watchNamespace, meta.ConditionFalse,
+			conditions.UpgradeableFalseMessage, conditions.UpgradeableFalseReason); err != nil {
 			return err
 		}
 

@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	mapi "github.com/openshift/machine-api-operator/pkg/apis/machine/v1beta1"
-	operatorframework "github.com/operator-framework/api/pkg/operators/v1"
 	"github.com/operator-framework/operator-lib/leader"
 	"github.com/spf13/pflag"
 	meta "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -166,12 +165,19 @@ func main() {
 
 	// Set default OperatorCondition Upgradable to True. Needed as OLM treats the absence of a condition as opting out
 	// https://olm.operatorframework.io/docs/advanced-tasks/communicating-operator-conditions-to-olm/#setting-defaults
-	err = conditions.SetUpgradeable(mgr.GetClient(), meta.ConditionTrue, conditions.UpgradeableTrueMessage,
-		conditions.UpgradeableTrueReason)
-	if err != nil {
-		setupLog.Error(err, "failed to set OperatorCondition", "type", operatorframework.Upgradeable)
+	if err := conditions.SetUpgradeableCond(mgr.GetClient(), watchNamespace, meta.ConditionTrue,
+		conditions.UpgradeableTrueMessage, conditions.UpgradeableTrueReason); err != nil {
+		setupLog.Error(err, "unable to set OperatorCondition")
 		os.Exit(1)
 	}
+// 2021-08-11T17:27:49.570Z	ERROR	setup	unable to set OperatorCondition	
+// {"error": "unable to get OperatorCondition resource: no kind is registered for the type v1.OperatorCondition in scheme 
+// \"/build/windows-machine-config-operator/main.go:40\"", 
+// "errorVerbose": "no kind is registered for the type v1.OperatorCondition in scheme \"/build/windows-machine-config-operator/main.go:40\"\nunable to get OperatorCondition resource\ngithub.com/openshift/windows-machine-config-operator/pkg/conditions.SetUpgradeableCond\n\t/build/windows-machine-config-operator/pkg/conditions/conditions.go:33\nmain.main\n\t/build/windows-machine-config-operator/main.go:168\nruntime.main\n\t/usr/local/go/src/runtime/proc.go:225\nruntime.goexit\n\t/usr/local/go/src/runtime/asm_amd64.s:1371"}
+// main.main
+// 	/build/windows-machine-config-operator/main.go:170
+// runtime.main
+// 	/usr/local/go/src/runtime/proc.go:225
 
 	// Setup all Controllers
 	winMachineReconciler, err := controllers.NewWindowsMachineReconciler(mgr, clusterConfig, watchNamespace)
