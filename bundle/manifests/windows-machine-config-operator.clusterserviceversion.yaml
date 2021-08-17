@@ -309,6 +309,16 @@ spec:
           - securitycontextconstraints
           verbs:
           - use
+        - apiGroups:
+          - operators.coreos.com
+          resources:
+          - operatorconditions
+          verbs:
+          - get
+          - list
+          - watch
+          - update
+          - patch
         serviceAccountName: windows-machine-config-operator
       deployments:
       - name: windows-machine-config-operator
@@ -340,7 +350,7 @@ spec:
                 - name: OPERATOR_NAME
                   value: windows-machine-config-operator
                 image: quay.io/mohashai/wmco:0.0.1
-                imagePullPolicy: IfNotPresent
+                imagePullPolicy: Always
                 name: manager
                 resources: {}
               hostNetwork: true
