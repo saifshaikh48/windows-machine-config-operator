@@ -204,8 +204,10 @@ github.com/openshift/machine-api-operator/pkg/generated/clientset/versioned/type
 # github.com/operator-framework/api v0.10.5
 ## explicit
 github.com/operator-framework/api/pkg/operators/v1
+github.com/operator-framework/api/pkg/operators/v2
 # github.com/operator-framework/operator-lib v0.6.0
 ## explicit
+github.com/operator-framework/operator-lib/conditions
 github.com/operator-framework/operator-lib/internal/utils
 github.com/operator-framework/operator-lib/leader
 # github.com/peterbourgon/diskv v2.0.1+incompatible
@@ -265,8 +267,6 @@ go.starlark.net/syntax
 go.uber.org/atomic
 # go.uber.org/multierr v1.6.0
 go.uber.org/multierr
-# go.uber.org/tools v0.0.0-20190618225709-2cfd321de3ee
-## explicit
 # go.uber.org/zap v1.18.1
 go.uber.org/zap
 go.uber.org/zap/buffer
