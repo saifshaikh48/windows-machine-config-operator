@@ -8,7 +8,6 @@ import (
 	"github.com/pkg/errors"
 	"golang.org/x/crypto/ssh"
 	core "k8s.io/api/core/v1"
-	meta "k8s.io/apimachinery/pkg/apis/meta/v1"
 	kubeTypes "k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/record"
@@ -16,7 +15,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
-	"github.com/openshift/windows-machine-config-operator/pkg/conditions"
 	"github.com/openshift/windows-machine-config-operator/pkg/crypto"
 	"github.com/openshift/windows-machine-config-operator/pkg/instances"
 	"github.com/openshift/windows-machine-config-operator/pkg/metadata"
@@ -61,12 +59,6 @@ func (r *instanceReconciler) ensureInstanceIsUpToDate(instance *instances.Instan
 		r.log.Info("instance is up to date", "node", instance.Node.GetName(), "version",
 			instance.Node.GetAnnotations()[metadata.VersionAnnotation])
 
-		// If not already done, set operator condition Upgradeable=True to allow OLM to update WMCO if needed
-		if err := conditions.SetUpgradeableCond(r.client, r.watchNamespace, meta.ConditionTrue,
-			conditions.UpgradeableTrueMessage, conditions.UpgradeableTrueReason); err != nil {
-			return err
-		}
-
 		return nil
 	}
 
@@ -79,12 +71,6 @@ func (r *instanceReconciler) ensureInstanceIsUpToDate(instance *instances.Instan
 	// Check if the instance was configured by a previous version of WMCO and must be deconfigured before being
 	// configured again.
 	if instance.UpgradeRequired() {
-		// Set operator condition Upgradeable=False to prevent OLM from updating WMCO while nodes are being updated
-		if err := conditions.SetUpgradeableCond(r.client, r.watchNamespace, meta.ConditionFalse,
-			conditions.UpgradeableFalseMessage, conditions.UpgradeableFalseReason); err != nil {
-			return err
-		}
-
 		// Instance requiring an upgrade indicates that node object is present with the version annotation
 		r.log.Info("instance requires upgrade", "node", instance.Node.GetName(), "version",
 			instance.Node.GetAnnotations()[metadata.VersionAnnotation], "expected version", version.Get())

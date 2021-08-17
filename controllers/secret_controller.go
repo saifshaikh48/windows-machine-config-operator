@@ -22,6 +22,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/controller-runtime/pkg/source"
 
+	"github.com/openshift/windows-machine-config-operator/pkg/conditions"
 	"github.com/openshift/windows-machine-config-operator/pkg/crypto"
 	"github.com/openshift/windows-machine-config-operator/pkg/metadata"
 	"github.com/openshift/windows-machine-config-operator/pkg/nodeconfig"
@@ -128,6 +129,13 @@ type SecretReconciler struct {
 func (r *SecretReconciler) Reconcile(ctx context.Context, request ctrl.Request) (reconcile.Result, error) {
 	log := r.log.WithValues("secret", request.NamespacedName)
 
+	// Update operator condition to prevent OLM from updating WMCO while secret resources are being processed
+	if err := conditions.SetUpgradeable(r.client, meta.ConditionFalse, conditions.UpgradeableFalseMessage,
+		conditions.UpgradeableFalseReason); err != nil {
+		// We do not want to return an error, since this is not a critical operation?
+		log.Info("unable to set Upgradeable condition, be cautious of automatic operator upgrades", "error", err)
+	}
+
 	keySigner, err := signer.Create(kubeTypes.NamespacedName{Namespace: r.watchNamespace,
 		Name: secrets.PrivateKeySecret}, r.client)
 	if err != nil {
@@ -135,6 +143,11 @@ func (r *SecretReconciler) Reconcile(ctx context.Context, request ctrl.Request) 
 			// Private key secret was not found, could have been deleted after reconcile request.
 			// Owned objects are automatically garbage collected. For additional cleanup logic use finalizers.
 			// Return and don't requeue
+			// Communicate current operator condition Upgradeable=True to allow OLM to update WMCO if needed
+			if err := conditions.SetUpgradeable(r.client, meta.ConditionTrue, conditions.UpgradeableTrueMessage,
+				conditions.UpgradeableTrueReason); err != nil {
+				log.Info("unable to set Upgradeable condition, manual operator upgrade may be needed", "error", err)
+			}
 			return reconcile.Result{}, nil
 		}
 		return reconcile.Result{}, errors.Wrapf(err, "unable to get secret %s", request.NamespacedName)
@@ -156,12 +169,22 @@ func (r *SecretReconciler) Reconcile(ctx context.Context, request ctrl.Request) 
 			return reconcile.Result{}, err
 		}
 		// Secret created successfully - don't requeue
+		// Communicate current operator condition Upgradeable=True to allow OLM to update WMCO if needed
+		if err := conditions.SetUpgradeable(r.client, meta.ConditionTrue, conditions.UpgradeableTrueMessage,
+			conditions.UpgradeableTrueReason); err != nil {
+			log.Info("unable to set Upgradeable condition, manual operator upgrade may be needed", "error", err)
+		}
 		return reconcile.Result{}, nil
 	} else if err != nil {
 		log.Error(err, "error retrieving the secret", "name", userDataSecret)
 		return reconcile.Result{}, err
 	} else if string(userData.Data["userData"][:]) == string(validUserData.Data["userData"][:]) {
 		// valid userData secret already exists
+		// Communicate current operator condition Upgradeable=True to allow OLM to update WMCO if needed
+		if err := conditions.SetUpgradeable(r.client, meta.ConditionTrue, conditions.UpgradeableTrueMessage,
+			conditions.UpgradeableTrueReason); err != nil {
+			log.Info("unable to set Upgradeable condition, manual operator upgrade may be needed", "error", err)
+		}
 		return reconcile.Result{}, nil
 	} else {
 		// userdata secret data does not match what is expected
@@ -216,6 +239,11 @@ func (r *SecretReconciler) Reconcile(ctx context.Context, request ctrl.Request) 
 		}
 
 		// Secret updated successfully
+		// Communicate current operator condition Upgradeable=True to allow OLM to update WMCO if needed
+		if err := conditions.SetUpgradeable(r.client, meta.ConditionTrue, conditions.UpgradeableTrueMessage,
+			conditions.UpgradeableTrueReason); err != nil {
+			log.Info("unable to set Upgradeable condition, manual operator upgrade may be needed", "error", err)
+		}
 		return reconcile.Result{}, nil
 	}
 }

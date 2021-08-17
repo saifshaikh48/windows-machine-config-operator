@@ -26,6 +26,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	"github.com/openshift/windows-machine-config-operator/pkg/cluster"
+	"github.com/openshift/windows-machine-config-operator/pkg/conditions"
 	"github.com/openshift/windows-machine-config-operator/pkg/instances"
 	"github.com/openshift/windows-machine-config-operator/pkg/metadata"
 	"github.com/openshift/windows-machine-config-operator/pkg/metrics"
@@ -207,6 +208,13 @@ func (r *WindowsMachineReconciler) Reconcile(ctx context.Context, request ctrl.R
 	log := r.log.WithValues("machine", request.NamespacedName)
 	log.V(1).Info("reconciling")
 
+	// Update operator condition to prevent OLM from updating WMCO while Machine nodes are being processed
+	if err := conditions.SetUpgradeable(r.client, meta.ConditionFalse, conditions.UpgradeableFalseMessage,
+		conditions.UpgradeableFalseReason); err != nil {
+		// We do not want to return an error, since this is not a critical operation?
+		log.Info("unable to set Upgradeable condition, be cautious of automatic operator upgrades", "error", err)
+	}
+
 	// Create a new signer from the private key the instances will be configured with
 	// Doing this before fetching the machine allows us to warn the user better about the missing private key
 	var err error
@@ -223,6 +231,11 @@ func (r *WindowsMachineReconciler) Reconcile(ctx context.Context, request ctrl.R
 			// Request object not found, could have been deleted after reconcile request.
 			// Owned objects are automatically garbage collected. For additional cleanup logic use finalizers.
 			// Return and don't requeue
+			// Communicate current operator condition Upgradeable=True to allow OLM to update WMCO if needed
+			if err := conditions.SetUpgradeable(r.client, meta.ConditionTrue, conditions.UpgradeableTrueMessage,
+				conditions.UpgradeableTrueReason); err != nil {
+				log.Info("unable to set Upgradeable condition, manual operator upgrade may be needed", "error", err)
+			}
 			return ctrl.Result{}, nil
 		}
 		// Error reading the object - requeue the request.
@@ -268,7 +281,15 @@ func (r *WindowsMachineReconciler) Reconcile(ctx context.Context, request ctrl.R
 						machine.Name, maxUnhealthyCount)
 					return ctrl.Result{Requeue: true}, nil
 				}
-				return ctrl.Result{}, r.deleteMachine(machine)
+				err = r.deleteMachine(machine)
+				if err == nil {
+					// Communicate current operator condition Upgradeable=True to allow OLM to update WMCO if needed
+					if err := conditions.SetUpgradeable(r.client, meta.ConditionTrue, conditions.UpgradeableTrueMessage,
+						conditions.UpgradeableTrueReason); err != nil {
+						r.log.Info("unable to set Upgradeable condition, manual operator upgrade may be needed", "error", err)
+					}
+				}
+				return ctrl.Result{}, err
 			}
 			// version annotation exists with a valid value, node is fully configured.
 			// configure Prometheus when we have already configured Windows Nodes. This is required to update Endpoints object if
@@ -286,6 +307,11 @@ func (r *WindowsMachineReconciler) Reconcile(ctx context.Context, request ctrl.R
 			return ctrl.Result{}, errors.Wrap(err, "unable to configure Prometheus")
 		}
 		// Machine is not in provisioned or running state, nothing we should do as of now
+		// except communicate current operator condition Upgradeable=True to allow OLM to update WMCO if needed
+		if err := conditions.SetUpgradeable(r.client, meta.ConditionTrue, conditions.UpgradeableTrueMessage,
+			conditions.UpgradeableTrueReason); err != nil {
+			log.Info("unable to set Upgradeable condition, manual operator upgrade may be needed", "error", err)
+		}
 		return ctrl.Result{}, nil
 	}
 
@@ -323,7 +349,15 @@ func (r *WindowsMachineReconciler) Reconcile(ctx context.Context, request ctrl.R
 			// re-provisioned.
 			r.recorder.Eventf(machine, core.EventTypeWarning, "MachineSetupFailure",
 				"Machine %s authentication failure", machine.Name)
-			return ctrl.Result{}, r.deleteMachine(machine)
+			err = r.deleteMachine(machine)
+			if err == nil {
+				// Communicate current operator condition Upgradeable=True to allow OLM to update WMCO if needed
+				if err := conditions.SetUpgradeable(r.client, meta.ConditionTrue, conditions.UpgradeableTrueMessage,
+					conditions.UpgradeableTrueReason); err != nil {
+					r.log.Info("unable to set Upgradeable condition, manual operator upgrade may be needed", "error", err)
+				}
+			}
+			return ctrl.Result{}, err
 		}
 		r.recorder.Eventf(machine, core.EventTypeWarning, "MachineSetupFailure",
 			"Machine %s configuration failure", machine.Name)
@@ -334,6 +368,12 @@ func (r *WindowsMachineReconciler) Reconcile(ctx context.Context, request ctrl.R
 	// configure Prometheus after a Windows machine is configured as a Node.
 	if err := r.prometheusNodeConfig.Configure(); err != nil {
 		return ctrl.Result{}, errors.Wrap(err, "unable to configure Prometheus")
+	}
+
+	// Communicate current operator condition Upgradeable=True to allow OLM to update WMCO if needed
+	if err := conditions.SetUpgradeable(r.client, meta.ConditionTrue, conditions.UpgradeableTrueMessage,
+		conditions.UpgradeableTrueReason); err != nil {
+		log.Info("unable to set Upgradeable condition, manual operator upgrade may be needed", "error", err)
 	}
 	return ctrl.Result{}, nil
 }

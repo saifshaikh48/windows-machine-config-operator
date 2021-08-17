@@ -8,10 +8,9 @@ import (
 	"strings"
 
 	mapi "github.com/openshift/machine-api-operator/pkg/apis/machine/v1beta1"
-	operatorframework "github.com/operator-framework/api/pkg/operators/v1"
+	operatorframework "github.com/operator-framework/api/pkg/operators/v2"
 	"github.com/operator-framework/operator-lib/leader"
 	"github.com/spf13/pflag"
-	meta "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -22,7 +21,6 @@ import (
 
 	"github.com/openshift/windows-machine-config-operator/controllers"
 	"github.com/openshift/windows-machine-config-operator/pkg/cluster"
-	"github.com/openshift/windows-machine-config-operator/pkg/conditions"
 	"github.com/openshift/windows-machine-config-operator/pkg/metrics"
 	"github.com/openshift/windows-machine-config-operator/pkg/nodeconfig/payload"
 	"github.com/openshift/windows-machine-config-operator/version"
@@ -164,28 +162,6 @@ func main() {
 			watchNamespace)
 		os.Exit(1)
 	}
-
-	// Set default OperatorCondition Upgradable to True. Needed as OLM treats the absence of a condition as opting out
-	// https://olm.operatorframework.io/docs/advanced-tasks/communicating-operator-conditions-to-olm/#setting-defaults
-	if err := conditions.SetUpgradeableCond(mgr.GetClient(), watchNamespace, meta.ConditionTrue,
-		conditions.UpgradeableTrueMessage, conditions.UpgradeableTrueReason); err != nil {
-		setupLog.Error(err, "unable to set default Upgradeable OperatorCondition, unsafe operator upgrades may occur")
-	}
-	
-// 2021-08-11T19:20:12.924Z	ERROR	setup	unable to set default Upgradeable OperatorCondition, unsafe operator upgrades may occur	{"error": "unable to get OperatorCondition resource: the cache is not started, can not read objects", "errorVerbose": "the cache is not started, can not read objects\nunable to get OperatorCondition resource\ngithub.com/openshift/windows-machine-config-operator/pkg/conditions.SetUpgradeableCond\n\t/build/windows-machine-config-operator/pkg/conditions/conditions.go:33\nmain.main\n\t/build/windows-machine-config-operator/main.go:170\nruntime.main\n\t/usr/local/go/src/runtime/proc.go:225\nruntime.goexit\n\t/usr/local/go/src/runtime/asm_amd64.s:1371"}
-// main.main
-// 	/build/windows-machine-config-operator/main.go:172
-// runtime.main
-// E0811 19:27:02.562925       1 reflector.go:138] sigs.k8s.io/controller-runtime/pkg/cache/internal/informers_map.go:146: Failed to watch *v1.OperatorCondition: failed to list *v1.OperatorCondition: operatorconditions.operators.coreos.com is forbidden: User "system:serviceaccount:openshift-windows-machine-config-operator:windows-machine-config-operator" cannot list resource "operatorconditions" in API group "operators.coreos.com" at the cluster scope
-
-	// 2021-08-11T17:27:49.570Z	ERROR	setup	unable to set OperatorCondition
-	// {"error": "unable to get OperatorCondition resource: no kind is registered for the type v1.OperatorCondition in scheme
-	// \"/build/windows-machine-config-operator/main.go:40\"",
-	// "errorVerbose": "no kind is registered for the type v1.OperatorCondition in scheme \"/build/windows-machine-config-operator/main.go:40\"\nunable to get OperatorCondition resource\ngithub.com/openshift/windows-machine-config-operator/pkg/conditions.SetUpgradeableCond\n\t/build/windows-machine-config-operator/pkg/conditions/conditions.go:33\nmain.main\n\t/build/windows-machine-config-operator/main.go:168\nruntime.main\n\t/usr/local/go/src/runtime/proc.go:225\nruntime.goexit\n\t/usr/local/go/src/runtime/asm_amd64.s:1371"}
-	// main.main
-	// 	/build/windows-machine-config-operator/main.go:170
-	// runtime.main
-	// 	/usr/local/go/src/runtime/proc.go:225
 
 	// Setup all Controllers
 	winMachineReconciler, err := controllers.NewWindowsMachineReconciler(mgr, clusterConfig, watchNamespace)
