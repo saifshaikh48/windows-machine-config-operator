@@ -102,7 +102,7 @@ github.com/golang/protobuf/ptypes/duration
 github.com/golang/protobuf/ptypes/timestamp
 # github.com/google/btree v1.0.1
 github.com/google/btree
-# github.com/google/go-cmp v0.5.5
+# github.com/google/go-cmp v0.5.6
 github.com/google/go-cmp/cmp
 github.com/google/go-cmp/cmp/internal/diff
 github.com/google/go-cmp/cmp/internal/flags
@@ -198,6 +198,9 @@ github.com/openshift/machine-api-operator/pkg/apis/machine/v1beta1
 github.com/openshift/machine-api-operator/pkg/apis/vsphereprovider/v1beta1
 github.com/openshift/machine-api-operator/pkg/generated/clientset/versioned/scheme
 github.com/openshift/machine-api-operator/pkg/generated/clientset/versioned/typed/machine/v1beta1
+# github.com/operator-framework/api v0.10.5
+## explicit
+github.com/operator-framework/api/pkg/operators/v2
 # github.com/operator-framework/operator-lib v0.4.0
 ## explicit
 github.com/operator-framework/operator-lib/internal/utils
