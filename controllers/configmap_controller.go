@@ -96,8 +96,8 @@ func (r *ConfigMapReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	_ = r.log.WithValues("configmap", req.NamespacedName)
 
 	// Update operator condition to prevent OLM from updating WMCO while BYOH nodes are being processed
-	if err := conditions.SetUpgradeable(r.client, meta.ConditionFalse, conditions.UpgradeableFalseMessage,
-		conditions.UpgradeableFalseReason); err != nil {
+	if err := conditions.PatchUpgradeable(r.client, r.watchNamespace, meta.ConditionFalse,
+		conditions.UpgradeableFalseMessage, conditions.UpgradeableFalseReason); err != nil {
 		// We do not want to return an error, since this is not a critical operation?
 		r.log.Info("unable to set Upgradeable condition, be cautious of automatic operator upgrades", "error", err)
 	}
@@ -123,15 +123,15 @@ func (r *ConfigMapReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		}
 	}
 
-	err = r.reconcileNodes(ctx, configMap)
-	if err == nil {
-		// Communicate current operator condition Upgradeable=True to allow OLM to update WMCO if needed
-		if err := conditions.SetUpgradeable(r.client, meta.ConditionTrue, conditions.UpgradeableTrueMessage,
-			conditions.UpgradeableTrueReason); err != nil {
-			r.log.Info("unable to set Upgradeable condition, manual operator upgrade may be needed", "error", err)
-		}
+	if err := r.reconcileNodes(ctx, configMap); err != nil {
+		return ctrl.Result{}, err
 	}
-	return ctrl.Result{}, err
+	// Communicate current operator condition Upgradeable=True to allow OLM to update WMCO if needed
+	if err := conditions.PatchUpgradeable(r.client, r.watchNamespace, meta.ConditionTrue,
+		conditions.UpgradeableTrueMessage, conditions.UpgradeableTrueReason); err != nil {
+		r.log.Info("unable to set Upgradeable condition, manual operator upgrade may be needed", "error", err)
+	}
+	return ctrl.Result{}, nil
 }
 
 // reconcileNodes corrects the discrepancy between the "expected" instances, and the "actual" Node list

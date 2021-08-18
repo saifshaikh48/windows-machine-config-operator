@@ -209,8 +209,8 @@ func (r *WindowsMachineReconciler) Reconcile(ctx context.Context, request ctrl.R
 	log.V(1).Info("reconciling")
 
 	// Update operator condition to prevent OLM from updating WMCO while Machine nodes are being processed
-	if err := conditions.SetUpgradeable(r.client, meta.ConditionFalse, conditions.UpgradeableFalseMessage,
-		conditions.UpgradeableFalseReason); err != nil {
+	if err := conditions.PatchUpgradeable(r.client, r.watchNamespace, meta.ConditionFalse,
+		conditions.UpgradeableFalseMessage, conditions.UpgradeableFalseReason); err != nil {
 		// We do not want to return an error, since this is not a critical operation?
 		log.Info("unable to set Upgradeable condition, be cautious of automatic operator upgrades", "error", err)
 	}
@@ -232,8 +232,8 @@ func (r *WindowsMachineReconciler) Reconcile(ctx context.Context, request ctrl.R
 			// Owned objects are automatically garbage collected. For additional cleanup logic use finalizers.
 			// Return and don't requeue
 			// Communicate current operator condition Upgradeable=True to allow OLM to update WMCO if needed
-			if err := conditions.SetUpgradeable(r.client, meta.ConditionTrue, conditions.UpgradeableTrueMessage,
-				conditions.UpgradeableTrueReason); err != nil {
+			if err := conditions.PatchUpgradeable(r.client, r.watchNamespace, meta.ConditionTrue,
+				conditions.UpgradeableTrueMessage, conditions.UpgradeableTrueReason); err != nil {
 				log.Info("unable to set Upgradeable condition, manual operator upgrade may be needed", "error", err)
 			}
 			return ctrl.Result{}, nil
@@ -281,21 +281,27 @@ func (r *WindowsMachineReconciler) Reconcile(ctx context.Context, request ctrl.R
 						machine.Name, maxUnhealthyCount)
 					return ctrl.Result{Requeue: true}, nil
 				}
-				err = r.deleteMachine(machine)
-				if err == nil {
-					// Communicate current operator condition Upgradeable=True to allow OLM to update WMCO if needed
-					if err := conditions.SetUpgradeable(r.client, meta.ConditionTrue, conditions.UpgradeableTrueMessage,
-						conditions.UpgradeableTrueReason); err != nil {
-						r.log.Info("unable to set Upgradeable condition, manual operator upgrade may be needed", "error", err)
-					}
+
+				if err = r.deleteMachine(machine); err != nil {
+					return ctrl.Result{}, err
 				}
-				return ctrl.Result{}, err
+				// Communicate current operator condition Upgradeable=True to allow OLM to update WMCO if needed
+				if err := conditions.PatchUpgradeable(r.client, r.watchNamespace, meta.ConditionTrue,
+					conditions.UpgradeableTrueMessage, conditions.UpgradeableTrueReason); err != nil {
+					log.Info("unable to set Upgradeable condition, manual operator upgrade may be needed", "error", err)
+				}
+				return ctrl.Result{}, nil
 			}
 			// version annotation exists with a valid value, node is fully configured.
 			// configure Prometheus when we have already configured Windows Nodes. This is required to update Endpoints object if
 			// it gets reverted when the operator pod restarts.
 			if err := r.prometheusNodeConfig.Configure(); err != nil {
 				return ctrl.Result{}, errors.Wrap(err, "unable to configure Prometheus")
+			}
+			// Communicate current operator condition Upgradeable=True to allow OLM to update WMCO if needed
+			if err := conditions.PatchUpgradeable(r.client, r.watchNamespace, meta.ConditionTrue,
+				conditions.UpgradeableTrueMessage, conditions.UpgradeableTrueReason); err != nil {
+				log.Info("unable to set Upgradeable condition, manual operator upgrade may be needed", "error", err)
 			}
 			return ctrl.Result{}, nil
 		}
@@ -308,8 +314,8 @@ func (r *WindowsMachineReconciler) Reconcile(ctx context.Context, request ctrl.R
 		}
 		// Machine is not in provisioned or running state, nothing we should do as of now
 		// except communicate current operator condition Upgradeable=True to allow OLM to update WMCO if needed
-		if err := conditions.SetUpgradeable(r.client, meta.ConditionTrue, conditions.UpgradeableTrueMessage,
-			conditions.UpgradeableTrueReason); err != nil {
+		if err := conditions.PatchUpgradeable(r.client, r.watchNamespace, meta.ConditionTrue,
+			conditions.UpgradeableTrueMessage, conditions.UpgradeableTrueReason); err != nil {
 			log.Info("unable to set Upgradeable condition, manual operator upgrade may be needed", "error", err)
 		}
 		return ctrl.Result{}, nil
@@ -349,15 +355,15 @@ func (r *WindowsMachineReconciler) Reconcile(ctx context.Context, request ctrl.R
 			// re-provisioned.
 			r.recorder.Eventf(machine, core.EventTypeWarning, "MachineSetupFailure",
 				"Machine %s authentication failure", machine.Name)
-			err = r.deleteMachine(machine)
-			if err == nil {
-				// Communicate current operator condition Upgradeable=True to allow OLM to update WMCO if needed
-				if err := conditions.SetUpgradeable(r.client, meta.ConditionTrue, conditions.UpgradeableTrueMessage,
-					conditions.UpgradeableTrueReason); err != nil {
-					r.log.Info("unable to set Upgradeable condition, manual operator upgrade may be needed", "error", err)
-				}
+			if err := r.deleteMachine(machine); err != nil {
+				return ctrl.Result{}, err
 			}
-			return ctrl.Result{}, err
+			// Communicate current operator condition Upgradeable=True to allow OLM to update WMCO if needed
+			if err := conditions.PatchUpgradeable(r.client, r.watchNamespace, meta.ConditionTrue,
+				conditions.UpgradeableTrueMessage, conditions.UpgradeableTrueReason); err != nil {
+				log.Info("unable to set Upgradeable condition, manual operator upgrade may be needed", "error", err)
+			}
+			return ctrl.Result{}, nil
 		}
 		r.recorder.Eventf(machine, core.EventTypeWarning, "MachineSetupFailure",
 			"Machine %s configuration failure", machine.Name)
@@ -371,8 +377,8 @@ func (r *WindowsMachineReconciler) Reconcile(ctx context.Context, request ctrl.R
 	}
 
 	// Communicate current operator condition Upgradeable=True to allow OLM to update WMCO if needed
-	if err := conditions.SetUpgradeable(r.client, meta.ConditionTrue, conditions.UpgradeableTrueMessage,
-		conditions.UpgradeableTrueReason); err != nil {
+	if err := conditions.PatchUpgradeable(r.client, r.watchNamespace, meta.ConditionTrue,
+		conditions.UpgradeableTrueMessage, conditions.UpgradeableTrueReason); err != nil {
 		log.Info("unable to set Upgradeable condition, manual operator upgrade may be needed", "error", err)
 	}
 	return ctrl.Result{}, nil
