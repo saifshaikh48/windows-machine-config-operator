@@ -12,11 +12,8 @@ import (
 
 // Info represents a instance that is meant to be joined to the cluster
 type Info struct {
-	// Address is the network address of the instance as specified by the associated ConfigMap entry.
-	// Must be an IPv4 address or a DNS name that resolves to one.
+	// Address is the IPv4 address associated with the instance.
 	Address string
-	// IPv4Address is the IPv4 address associated with the instance's given Address. May be the same value.
-	IPv4Address string
 	// Username is the name of a user that can be ssh'd into.
 	Username string
 	// NewHostname being set means that the instance's hostname should be changed. An empty value is a no-op.
@@ -27,14 +24,15 @@ type Info struct {
 	Node *core.Node
 }
 
-// NewInfo returns a new Info. newHostname being set means that the instance's hostname should be
-// changed. An empty value is a no-op.
+// NewInfo returns a new Info. address is the network address of the instance as specified by
+// the associated ConfigMap entry. Must be an IPv4 address or a DNS name that resolves to one.
+// newHostname being set means that the instance's hostname should be changed. An empty value is a no-op.
 func NewInfo(address, username, newHostname string, setNodeIP bool, node *core.Node) (*Info, error) {
 	ipv4, err := resolveToIPv4Address(address)
 	if err != nil {
 		return nil, errors.Wrapf(err, "invalid address %s, unable to create instance info", address)
 	}
-	return &Info{Address: address, IPv4Address: ipv4, Username: username, NewHostname: newHostname,
+	return &Info{Address: ipv4, Username: username, NewHostname: newHostname,
 		SetNodeIP: setNodeIP, Node: node}, nil
 }
 

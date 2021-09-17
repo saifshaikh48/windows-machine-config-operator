@@ -321,19 +321,13 @@ func findHostName(instanceInfo *instance.Info, instanceSigner ssh.Signer) (strin
 // in the given instance list. If the address found is an IP address, we do a reverse lookup for the DNS address.
 func matchesDNS(nodeName string, windowsInstances []*instance.Info) (bool, error) {
 	for _, instanceInfo := range windowsInstances {
-		// reverse lookup the instance if the address is an IP address
-		if parseAddr := net.ParseIP(instanceInfo.Address); parseAddr != nil {
-			dnsAddresses, err := net.LookupAddr(instanceInfo.Address)
-			if err != nil {
-				return false, errors.Wrapf(err, "failed to lookup DNS for IP %s", instanceInfo.Address)
-			}
-			for _, dns := range dnsAddresses {
-				if strings.Contains(dns, nodeName) {
-					return true, nil
-				}
-			}
-		} else { // direct match if it is a DNS address
-			if strings.Contains(instanceInfo.Address, nodeName) {
+		// reverse lookup the instance IP address
+		dnsAddresses, err := net.LookupAddr(instanceInfo.Address)
+		if err != nil {
+			return false, errors.Wrapf(err, "failed to lookup DNS for IP %s", instanceInfo.Address)
+		}
+		for _, dns := range dnsAddresses {
+			if strings.Contains(dns, nodeName) {
 				return true, nil
 			}
 		}

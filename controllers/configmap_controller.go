@@ -220,7 +220,7 @@ func hasAssociatedInstance(nodeAddresses []core.NodeAddress, instances []*instan
 	for _, nodeAddress := range nodeAddresses {
 		for _, instanceInfo := range instances {
 			// Direct match node network address whether it is a DNS name or an IP address
-			if nodeAddress.Address == instanceInfo.Address || nodeAddress.Address == instanceInfo.IPv4Address {
+			if nodeAddress.Address == instanceInfo.Address {
 				return true, nil
 			}
 		}

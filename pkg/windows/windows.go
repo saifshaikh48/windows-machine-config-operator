@@ -177,7 +177,6 @@ type windows struct {
 	// vxlanPort is the custom VXLAN port
 	vxlanPort string
 	// instance contains information about the Windows instance to interact with
-	// A valid instance is configured with a network address that either is an IPv4 address or resolves to one.
 	instance *instance.Info
 	log      logr.Logger
 }
@@ -204,7 +203,7 @@ func New(workerIgnitionEndpoint, vxlanPort string, instanceInfo *instance.Info, 
 // Interface methods
 
 func (vm *windows) GetIPv4Address() string {
-	return vm.instance.IPv4Address
+	return vm.instance.Address
 }
 
 func (vm *windows) EnsureFile(file *payload.FileInfo, remoteDir string) error {
