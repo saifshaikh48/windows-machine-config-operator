@@ -29,11 +29,11 @@ import (
 	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	"github.com/openshift/windows-machine-config-operator/pkg/configmap/wiparser"
 	"github.com/openshift/windows-machine-config-operator/pkg/instance"
 	"github.com/openshift/windows-machine-config-operator/pkg/secrets"
 	"github.com/openshift/windows-machine-config-operator/pkg/signer"
 	"github.com/openshift/windows-machine-config-operator/pkg/windows"
-	"github.com/openshift/windows-machine-config-operator/pkg/wiparser"
 )
 
 //+kubebuilder:rbac:groups="certificates.k8s.io",resources=certificatesigningrequests/approval,verbs=update

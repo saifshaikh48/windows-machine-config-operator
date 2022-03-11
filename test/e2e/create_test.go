@@ -15,19 +15,19 @@ import (
 	"github.com/pkg/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
 
 	"github.com/openshift/windows-machine-config-operator/controllers"
+	"github.com/openshift/windows-machine-config-operator/pkg/configmap/wiparser"
 	"github.com/openshift/windows-machine-config-operator/pkg/crypto"
 	"github.com/openshift/windows-machine-config-operator/pkg/metadata"
 	"github.com/openshift/windows-machine-config-operator/pkg/nodeconfig"
 	"github.com/openshift/windows-machine-config-operator/pkg/patch"
 	"github.com/openshift/windows-machine-config-operator/pkg/retry"
-	"github.com/openshift/windows-machine-config-operator/pkg/wiparser"
 	"github.com/openshift/windows-machine-config-operator/test/e2e/clusterinfo"
 )
 

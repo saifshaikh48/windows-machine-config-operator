@@ -11,9 +11,9 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
+	"github.com/openshift/windows-machine-config-operator/pkg/configmap/wiparser"
 	"github.com/openshift/windows-machine-config-operator/pkg/metadata"
 	"github.com/openshift/windows-machine-config-operator/pkg/patch"
-	"github.com/openshift/windows-machine-config-operator/pkg/wiparser"
 )
 
 func reconfigurationTestSuite(t *testing.T) {

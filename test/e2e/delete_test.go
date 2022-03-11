@@ -14,9 +14,9 @@ import (
 	meta "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/openshift/windows-machine-config-operator/controllers"
+	"github.com/openshift/windows-machine-config-operator/pkg/configmap/wiparser"
 	"github.com/openshift/windows-machine-config-operator/pkg/secrets"
 	"github.com/openshift/windows-machine-config-operator/pkg/windows"
-	"github.com/openshift/windows-machine-config-operator/pkg/wiparser"
 	"github.com/openshift/windows-machine-config-operator/test/e2e/clusterinfo"
 )
 

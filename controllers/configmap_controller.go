@@ -39,13 +39,14 @@ import (
 
 	"github.com/openshift/windows-machine-config-operator/pkg/cluster"
 	"github.com/openshift/windows-machine-config-operator/pkg/condition"
+	"github.com/openshift/windows-machine-config-operator/pkg/configmap/wiparser"
+	"github.com/openshift/windows-machine-config-operator/pkg/configmap/wsvalidator"
 	"github.com/openshift/windows-machine-config-operator/pkg/crypto"
 	"github.com/openshift/windows-machine-config-operator/pkg/instance"
 	"github.com/openshift/windows-machine-config-operator/pkg/metrics"
 	"github.com/openshift/windows-machine-config-operator/pkg/nodeconfig"
 	"github.com/openshift/windows-machine-config-operator/pkg/secrets"
 	"github.com/openshift/windows-machine-config-operator/pkg/signer"
-	"github.com/openshift/windows-machine-config-operator/pkg/wiparser"
 )
 
 //+kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch;delete
@@ -286,7 +287,8 @@ func (r *ConfigMapReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
-// isValidConfigMap returns true if the ConfigMap object is the InstanceConfigMap
+// isValidConfigMap returns true if the ConfigMap object is the InstanceConfigMap or the ServicesConfigMap
 func (r *ConfigMapReconciler) isValidConfigMap(o client.Object) bool {
-	return o.GetNamespace() == r.watchNamespace && o.GetName() == wiparser.InstanceConfigMap
+	return o.GetNamespace() == r.watchNamespace &&
+		(o.GetName() == wiparser.InstanceConfigMap || o.GetName() == wsvalidator.ServicesConfigMap)
 }
