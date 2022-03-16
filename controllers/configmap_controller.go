@@ -20,6 +20,7 @@ import (
 	"context"
 	"net"
 
+	"github.com/go-logr/logr"
 	config "github.com/openshift/api/config/v1"
 	"github.com/pkg/errors"
 	core "k8s.io/api/core/v1"
@@ -27,6 +28,7 @@ import (
 	meta "k8s.io/apimachinery/pkg/apis/meta/v1"
 	kubeTypes "k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -333,4 +335,51 @@ func (r *ConfigMapReconciler) ensureExists(ctx context.Context, namespacedName k
 		}
 	}
 	return windowsServices, err
+}
+
+// EnsureServicesConfigMapExists ensures that the ServicesConfigMap is present and valid on the cluster during operator
+// bootup. ConfigMapReconciler.ensureExists() cannot be called in its stead as the cache has not been populated yet,
+// which is why the typed client is used here as it calls the API server directly.
+func EnsureServicesConfigMapExists(log logr.Logger, cfg *rest.Config, namespace string) error {
+	if cfg == nil {
+		return errors.New("config should not be nil")
+	}
+
+	k8sClientSet, err := kubernetes.NewForConfig(cfg)
+	if err != nil {
+		return errors.Wrap(err, "error creating config client")
+	}
+
+	var windowsServices *core.ConfigMap
+	if windowsServices, err = k8sClientSet.CoreV1().ConfigMaps(namespace).Get(context.TODO(),
+		wsvalidator.ServicesConfigMap, meta.GetOptions{}); err != nil {
+		if k8sapierrors.IsNotFound(err) {
+			windowsServices = wsvalidator.GenerateWindowsServiceConfigMap(wsvalidator.ServicesConfigMap, namespace)
+			if _, err = k8sClientSet.CoreV1().ConfigMaps(namespace).Create(context.TODO(), windowsServices,
+				meta.CreateOptions{}); err != nil {
+				return err
+			}
+			log.Info("Created", "ConfigMap", kubeTypes.NamespacedName{Namespace: namespace,
+				Name: wsvalidator.ServicesConfigMap})
+		}
+	}
+
+	// If a ConfigMap with incorrect values is found, WMCO will delete and recreate it with the proper values
+	if _, _, err := wsvalidator.ParseAndValidate(windowsServices.Data); err != nil {
+		if err = k8sClientSet.CoreV1().ConfigMaps(namespace).Delete(context.TODO(), wsvalidator.ServicesConfigMap,
+			meta.DeleteOptions{}); err != nil {
+			return err
+		}
+		log.Info("Deleted", "ConfigMap", kubeTypes.NamespacedName{Namespace: namespace,
+			Name: wsvalidator.ServicesConfigMap})
+
+		windowsServices = wsvalidator.GenerateWindowsServiceConfigMap(wsvalidator.ServicesConfigMap, namespace)
+		if _, err = k8sClientSet.CoreV1().ConfigMaps(namespace).Create(context.TODO(), windowsServices,
+			meta.CreateOptions{}); err != nil {
+			return err
+		}
+		log.Info("Created", "ConfigMap", kubeTypes.NamespacedName{Namespace: namespace,
+			Name: wsvalidator.ServicesConfigMap})
+	}
+	return err
 }
