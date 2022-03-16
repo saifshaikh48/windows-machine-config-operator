@@ -140,7 +140,17 @@ func (r *ConfigMapReconciler) Reconcile(ctx context.Context,
 		return ctrl.Result{}, r.reconcileNodes(ctx, configMap)
 	} else {
 		// If not the services ConfigMap is not present, create it
-		_, err := r.ensureExists(context.TODO(), req.NamespacedName)
+		windowsServices, err := r.ensureExists(context.TODO(), req.NamespacedName)
+
+		// If a ConfigMap with incorrect values is found, WMCO will delete and recreate it with the proper values
+		if _, _, err := wsvalidator.ParseAndValidate(windowsServices.Data); err != nil {
+			// Deleting will trigger an event for the CM_controller, which will re-create a proper ConfigMap
+			if err = r.client.Delete(ctx, windowsServices); err != nil {
+				return ctrl.Result{}, err
+			}
+			r.log.V(1).Info("Deleted", "ConfigMap", kubeTypes.NamespacedName{Namespace: req.Namespace, Name: req.Name})
+			return ctrl.Result{}, errors.Wrap(err, "Invalid ConfigMap schema")
+		}
 
 		// TODO: actually react to changes. Currently do nothing but log
 		r.log.V(1).Info("Reacting to event...", "ConfigMap", req.NamespacedName)
