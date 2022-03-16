@@ -27,6 +27,7 @@ import (
 	"github.com/openshift/windows-machine-config-operator/controllers"
 	"github.com/openshift/windows-machine-config-operator/pkg/cluster"
 	"github.com/openshift/windows-machine-config-operator/pkg/condition"
+	"github.com/openshift/windows-machine-config-operator/pkg/configmap/wsvalidator"
 	"github.com/openshift/windows-machine-config-operator/pkg/csr"
 	"github.com/openshift/windows-machine-config-operator/pkg/metadata"
 	nc "github.com/openshift/windows-machine-config-operator/pkg/nodeconfig"
@@ -462,6 +463,64 @@ func testExpectedServicesRunning(t *testing.T) {
 			}
 		})
 	}
+}
+
+// testServicesConfigMap tests 2 aspects of expected functionality for the services ConfigMap
+// 1. It exists on operator startup and 2. It is recreated when deleted
+func testServicesConfigMap(t *testing.T) {
+	tc, err := NewTestContext()
+	require.NoError(t, err)
+
+	err = tc.validateWindowsServicesConfigMap()
+	require.NoError(t, err, "error validating windows-instances ConfigMap")
+
+	err = tc.deleteAndWaitForServicesConfigMap()
+	require.NoError(t, err, "error ensuring windows-services ConfigMap is re-created when deleted")
+}
+
+// validateWindowsServicesConfigMap ensures the windows-services ConfigMap exists in the cluster and has valid contents
+func (tc *testContext) validateWindowsServicesConfigMap() error {
+	windowsServices, err := tc.client.K8s.CoreV1().ConfigMaps(tc.namespace).Get(context.TODO(),
+		wsvalidator.ServicesConfigMap, meta.GetOptions{})
+	if err != nil {
+		return errors.Wrapf(err, "error retrieving ConfigMap: %s", wsvalidator.ServicesConfigMap)
+	}
+
+	if _, _, err := wsvalidator.ParseAndValidate(windowsServices.Data); err != nil {
+		return errors.Wrapf(err, "invalid services ConfigMap data")
+	}
+	return nil
+}
+
+// deleteAndWaitForServicesConfigMap deletes the given ConfigMap and ensures it is re-created properly
+func (tc *testContext) deleteAndWaitForServicesConfigMap() error {
+	err := tc.client.K8s.CoreV1().ConfigMaps(tc.namespace).Delete(context.TODO(), wsvalidator.ServicesConfigMap,
+		meta.DeleteOptions{})
+	if err != nil {
+		return errors.Wrapf(err, "error deleting ConfigMap %s/%s", tc.namespace, wsvalidator.ServicesConfigMap)
+	}
+
+	cm := &core.ConfigMap{}
+	err = wait.Poll(retry.Interval, retry.ResourceChangeTimeout, func() (bool, error) {
+		cm, err = tc.client.K8s.CoreV1().ConfigMaps(tc.namespace).Get(context.TODO(), wsvalidator.ServicesConfigMap,
+			meta.GetOptions{})
+		if err != nil {
+			if !apierrors.IsNotFound(err) {
+				return false, errors.Wrapf(err, "error retrieving ConfigMap: %s", wsvalidator.ServicesConfigMap)
+			}
+		}
+		// retry until timeout if the error is a resource NotFound error
+		return err == nil, nil
+	})
+	if err != nil {
+		return errors.Wrapf(err, "error waiting for ConfigMap %s/%s to be re-created", tc.namespace,
+			wsvalidator.ServicesConfigMap)
+	}
+
+	if _, _, err := wsvalidator.ParseAndValidate(cm.Data); err != nil {
+		return errors.Wrapf(err, "invalid services ConfigMap data")
+	}
+	return nil
 }
 
 // testCSRApproval tests if the BYOH CSR's have been approved by WMCO CSR approver
