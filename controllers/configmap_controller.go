@@ -122,19 +122,29 @@ func (r *ConfigMapReconciler) Reconcile(ctx context.Context,
 	}
 
 	// Fetch the ConfigMap. The predicate will have filtered out any ConfigMaps that we should not reconcile
-	// so it is safe to assume that all ConfigMaps being reconciled describe hosts that need to be present in the
-	// cluster. This also handles the case when the reconciliation is kicked off by the InstanceConfigMap being deleted.
-	// In the deletion case, an empty InstanceConfigMap will be reconciled now resulting in all existing BYOH nodes
-	// being deleted.
-	configMap := &core.ConfigMap{}
-	if err := r.client.Get(ctx, req.NamespacedName, configMap); err != nil {
-		if !k8sapierrors.IsNotFound(err) {
-			// Error reading the object - requeue the request.
-			return ctrl.Result{}, err
+	// so it is safe to assume that all ConfigMaps being reconciled are 1 of 2 types
+	// 1. windows-instances, describing hosts that need to be present in the cluster.
+	// 2. windows-services, describing expected configuration of WMCO-managed services on all Windows instances
+	if req.NamespacedName.Name == wiparser.InstanceConfigMap {
+		// This path also handles the case when the reconciliation is kicked off by the InstanceConfigMap being deleted.
+		// In the deletion case, an empty InstanceConfigMap will be reconciled now resulting in all existing BYOH nodes
+		// being deleted.
+		configMap := &core.ConfigMap{}
+		if err := r.client.Get(ctx, req.NamespacedName, configMap); err != nil {
+			if !k8sapierrors.IsNotFound(err) {
+				// Error reading the object - requeue the request.
+				return ctrl.Result{}, err
+			}
 		}
-	}
+		return ctrl.Result{}, r.reconcileNodes(ctx, configMap)
+	} else {
+		// If not the services ConfigMap is not present, create it
+		_, err := r.ensureExists(context.TODO(), req.NamespacedName)
 
-	return ctrl.Result{}, r.reconcileNodes(ctx, configMap)
+		// TODO: actually react to changes. Currently do nothing but log
+		r.log.V(1).Info("Reacting to event...", "ConfigMap", req.NamespacedName)
+		return ctrl.Result{}, err
+	}
 }
 
 // reconcileNodes corrects the discrepancy between the "expected" instances, and the "actual" Node list
@@ -291,4 +301,24 @@ func (r *ConfigMapReconciler) SetupWithManager(mgr ctrl.Manager) error {
 func (r *ConfigMapReconciler) isValidConfigMap(o client.Object) bool {
 	return o.GetNamespace() == r.watchNamespace &&
 		(o.GetName() == wiparser.InstanceConfigMap || o.GetName() == wsvalidator.ServicesConfigMap)
+}
+
+// ensureExists returns the ServicesConfigMap if present and valid. If not, it creates a valid one and returns it.
+func (r *ConfigMapReconciler) ensureExists(ctx context.Context, namespacedName kubeTypes.NamespacedName) (
+	*core.ConfigMap, error) {
+	windowsServices := &core.ConfigMap{}
+	var err error
+	if err = r.client.Get(ctx, namespacedName, windowsServices); err != nil {
+		if k8sapierrors.IsNotFound(err) {
+			windowsServices = wsvalidator.GenerateWindowsServiceConfigMap(namespacedName.Name, namespacedName.Namespace)
+			if err = r.client.Create(ctx, windowsServices); err != nil {
+				return nil, err
+			}
+			r.log.Info("Created", "ConfigMap", namespacedName)
+			if err = r.client.Get(ctx, namespacedName, windowsServices); err != nil {
+				return nil, err
+			}
+		}
+	}
+	return windowsServices, err
 }
