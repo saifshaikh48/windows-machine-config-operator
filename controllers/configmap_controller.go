@@ -142,6 +142,16 @@ func (r *ConfigMapReconciler) Reconcile(ctx context.Context,
 	// At this point configMap will be set properly
 	switch req.NamespacedName.Name {
 	case servicescm.Name:
+		// If a ConfigMap with invalid values is found, WMCO will delete and recreate it with proper values
+		if _, err := servicescm.Parse(configMap.Data); err != nil {
+			// Deleting will trigger an event for the configmap_controller, which will re-create a proper ConfigMap
+			if err = r.client.Delete(ctx, configMap); err != nil {
+				return ctrl.Result{}, err
+			}
+			r.log.Info("Deleted invalid resource", "ConfigMap",
+				kubeTypes.NamespacedName{Namespace: req.Namespace, Name: req.Name}, "Error", err.Error())
+			return ctrl.Result{}, errors.Wrap(err, "Invalid ConfigMap schema")
+		}
 		// TODO: actually react to changes to the services ConfigMap. Currently do nothing but log
 		r.log.V(1).Info("Reacting to event...", "ConfigMap", req.NamespacedName)
 	case wiparser.InstanceConfigMap:
