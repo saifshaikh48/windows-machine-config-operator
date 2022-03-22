@@ -44,6 +44,7 @@ import (
 	"github.com/openshift/windows-machine-config-operator/pkg/metrics"
 	"github.com/openshift/windows-machine-config-operator/pkg/nodeconfig"
 	"github.com/openshift/windows-machine-config-operator/pkg/secrets"
+	"github.com/openshift/windows-machine-config-operator/pkg/servicescm"
 	"github.com/openshift/windows-machine-config-operator/pkg/signer"
 	"github.com/openshift/windows-machine-config-operator/pkg/wiparser"
 )
@@ -121,19 +122,35 @@ func (r *ConfigMapReconciler) Reconcile(ctx context.Context,
 	}
 
 	// Fetch the ConfigMap. The predicate will have filtered out any ConfigMaps that we should not reconcile
-	// so it is safe to assume that all ConfigMaps being reconciled describe hosts that need to be present in the
-	// cluster. This also handles the case when the reconciliation is kicked off by the InstanceConfigMap being deleted.
-	// In the deletion case, an empty InstanceConfigMap will be reconciled now resulting in all existing BYOH nodes
-	// being deleted.
+	// so it is safe to assume that all ConfigMaps being reconciled are one of:
+	// 1. windows-instances, describing hosts that need to be present in the cluster.
+	// 2. windows-services, describing expected configuration of WMCO-managed services on all Windows instances
 	configMap := &core.ConfigMap{}
 	if err := r.client.Get(ctx, req.NamespacedName, configMap); err != nil {
 		if !k8sapierrors.IsNotFound(err) {
 			// Error reading the object - requeue the request.
 			return ctrl.Result{}, err
 		}
+		if req.NamespacedName.Name == servicescm.Name {
+			// Create and retrieve the services ConfigMap as it is not present
+			if configMap, err = r.createServicesConfigMap(ctx, req.NamespacedName); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
 	}
 
-	return ctrl.Result{}, r.reconcileNodes(ctx, configMap)
+	// At this point configMap will be set properly
+	switch req.NamespacedName.Name {
+	case servicescm.Name:
+		// TODO: actually react to changes to the services ConfigMap. Currently do nothing but log
+		r.log.V(1).Info("Reacting to event...", "ConfigMap", req.NamespacedName)
+	case wiparser.InstanceConfigMap:
+		return ctrl.Result{}, r.reconcileNodes(ctx, configMap)
+	default:
+		// Unexpected configmap, return no error so we don't requeue
+		return ctrl.Result{}, nil
+	}
+	return ctrl.Result{}, nil
 }
 
 // reconcileNodes corrects the discrepancy between the "expected" instances, and the "actual" Node list
@@ -258,9 +275,14 @@ func hasAssociatedInstance(nodeAddresses []core.NodeAddress, instances []*instan
 
 // mapToConfigMap fulfills the MapFn type, while always returning a request to the windows-instance ConfigMap
 func (r *ConfigMapReconciler) mapToConfigMap(_ client.Object) []reconcile.Request {
-	return []reconcile.Request{{
-		NamespacedName: kubeTypes.NamespacedName{Namespace: r.watchNamespace, Name: wiparser.InstanceConfigMap},
-	}}
+	return []reconcile.Request{
+		{
+			NamespacedName: kubeTypes.NamespacedName{Namespace: r.watchNamespace, Name: wiparser.InstanceConfigMap},
+		},
+		{
+			NamespacedName: kubeTypes.NamespacedName{Namespace: r.watchNamespace, Name: servicescm.Name},
+		},
+	}
 }
 
 // SetupWithManager sets up the controller with the Manager.
@@ -288,5 +310,21 @@ func (r *ConfigMapReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 // isValidConfigMap returns true if the ConfigMap object is the InstanceConfigMap
 func (r *ConfigMapReconciler) isValidConfigMap(o client.Object) bool {
-	return o.GetNamespace() == r.watchNamespace && o.GetName() == wiparser.InstanceConfigMap
+	return o.GetNamespace() == r.watchNamespace &&
+		(o.GetName() == wiparser.InstanceConfigMap || o.GetName() == servicescm.Name)
+}
+
+// createServicesConfigMap creates a valid ServicesConfigMap and returns it
+func (r *ConfigMapReconciler) createServicesConfigMap(ctx context.Context, namespacedName kubeTypes.NamespacedName) (
+	*core.ConfigMap, error) {
+	windowsServices, err := servicescm.Generate(namespacedName.Name, namespacedName.Namespace)
+	if err != nil {
+		return nil, err
+	}
+
+	if err = r.client.Create(ctx, windowsServices); err != nil {
+		return nil, err
+	}
+	r.log.Info("Created", "ConfigMap", namespacedName)
+	return windowsServices, nil
 }

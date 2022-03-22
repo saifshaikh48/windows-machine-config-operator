@@ -1,7 +1,11 @@
 package servicescm
 
 import (
+	"encoding/json"
 	"fmt"
+
+	core "k8s.io/api/core/v1"
+	meta "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/openshift/windows-machine-config-operator/version"
 )
@@ -13,6 +17,13 @@ var Name string
 func init() {
 	Name = getName()
 }
+
+const (
+	// servicesKey is a required key in the services ConfigMap. The value for this key is a Service object JSON array.
+	servicesKey = "services"
+	// filesKey is a required key in the services ConfigMap. The value for this key is a FileInfo object JSON array.
+	filesKey = "files"
+)
 
 // NodeCmdArg describes a Windows command variable and how its value can be populated
 type NodeCmdArg struct {
@@ -58,6 +69,54 @@ type FileInfo struct {
 	Path string `json:"path"`
 	// Checksum is the checksum of the file specified at Path. It is used to validate that a file has not been changed
 	Checksum string `json:"checksum"`
+}
+
+// data represents the Data field of a `windows-services` ConfigMap resource, which is all the required information to
+// configure a Windows instance as a Node
+type data struct {
+	// Services contains information required to start all required Windows services with proper arguments and order
+	Services []Service `json:"services"`
+	// Files contains the path and checksum of all the files copied to a Windows VM by WMCO
+	Files []FileInfo `json:"files"`
+}
+
+// newData returns a new 'data' object with the given services and files.
+func newData(services *[]Service, files *[]FileInfo) *data {
+	cmData := &data{*services, *files}
+	return cmData
+}
+
+// Generate creates an immutable service ConfigMap which provides WICD with the specifications
+// for each Windows service that must be created on a Windows instance.
+func Generate(name, namespace string) (*core.ConfigMap, error) {
+	immutable := true
+	servicesConfigMap := &core.ConfigMap{
+		ObjectMeta: meta.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+		},
+		Immutable: &immutable,
+		Data:      make(map[string]string),
+	}
+
+	//TODO: Fill in content as services are added to the ConfigMap definition
+	services := []Service{}
+	files := []FileInfo{}
+	cmData := newData(&services, &files)
+
+	jsonServices, err := json.Marshal(cmData.Services)
+	if err != nil {
+		return nil, err
+	}
+	servicesConfigMap.Data[servicesKey] = string(jsonServices)
+
+	jsonFiles, err := json.Marshal(cmData.Files)
+	if err != nil {
+		return nil, err
+	}
+	servicesConfigMap.Data[filesKey] = string(jsonFiles)
+
+	return servicesConfigMap, nil
 }
 
 // getName returns the name of the ConfigMap, using the following naming convention:
