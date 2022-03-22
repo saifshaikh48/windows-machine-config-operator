@@ -8,6 +8,8 @@ set -o pipefail
 add_git_data_to_version() {
   local WMCO_SEMVER=$1
   GIT_COMMIT=$(git rev-parse --short HEAD)
+  # The commit hash retreived varies in length, so we will standardize to length received from the operator image
+  GIT_COMMIT="${GIT_COMMIT:0:7}"
   FULL_VERSION="${WMCO_SEMVER}-${GIT_COMMIT}"
 
   # If any files that affect the building of the operator binary have been changed, append "-dirty" to the version.

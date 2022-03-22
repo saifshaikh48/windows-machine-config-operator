@@ -32,6 +32,7 @@ import (
 	nc "github.com/openshift/windows-machine-config-operator/pkg/nodeconfig"
 	"github.com/openshift/windows-machine-config-operator/pkg/retry"
 	"github.com/openshift/windows-machine-config-operator/pkg/secrets"
+	"github.com/openshift/windows-machine-config-operator/pkg/servicescm"
 	"github.com/openshift/windows-machine-config-operator/pkg/windows"
 )
 
@@ -462,6 +463,64 @@ func testExpectedServicesRunning(t *testing.T) {
 			}
 		})
 	}
+}
+
+// testServicesConfigMap tests 2 aspects of expected functionality for the services ConfigMap
+// 1. It exists on operator startup and 2. It is recreated when deleted
+func testServicesConfigMap(t *testing.T) {
+	tc, err := NewTestContext()
+	require.NoError(t, err)
+
+	operatorVersion, err := getWMCOVersion()
+	require.NoError(t, err)
+	// There is no easy way to populate ldflags when running e2e tests so that version.Get() will return
+	// anything other than "" without having to maintain the WMCO version in another location. Because of this,
+	// servicescm.Name will hold the value of "windows-services-" and the version must be retrieved in another manner.
+	servicesConfigMapName := servicescm.Name + operatorVersion
+
+	err = tc.validateWindowsServicesConfigMap(servicesConfigMapName)
+	require.NoErrorf(t, err, "error validating ConfigMap: %s", servicesConfigMapName)
+
+	err = tc.deleteAndWaitForServicesConfigMap(servicesConfigMapName)
+	require.NoErrorf(t, err, "error ensuring ConfigMap %s is re-created when deleted", servicesConfigMapName)
+}
+
+// validateWindowsServicesConfigMap ensures the windows-services ConfigMap exists in the cluster and has valid contents
+func (tc *testContext) validateWindowsServicesConfigMap(cmName string) error {
+	windowsServices, err := tc.client.K8s.CoreV1().ConfigMaps(tc.namespace).Get(context.TODO(),
+		cmName, meta.GetOptions{})
+	if err != nil {
+		return errors.Wrapf(err, "error retrieving ConfigMap: %s", cmName)
+	}
+
+	if _, err := servicescm.Parse(windowsServices.Data); err != nil {
+		return errors.Wrapf(err, "invalid %s ConfigMap data", cmName)
+	}
+	return nil
+}
+
+// deleteAndWaitForServicesConfigMap deletes the given ConfigMap and ensures it is re-created properly
+func (tc *testContext) deleteAndWaitForServicesConfigMap(cmName string) error {
+	err := tc.client.K8s.CoreV1().ConfigMaps(tc.namespace).Delete(context.TODO(), cmName,
+		meta.DeleteOptions{})
+	if err != nil {
+		return errors.Wrapf(err, "error deleting ConfigMap %s/%s", tc.namespace, cmName)
+	}
+
+	err = wait.Poll(retry.Interval, retry.ResourceChangeTimeout, func() (bool, error) {
+		_, err = tc.client.K8s.CoreV1().ConfigMaps(tc.namespace).Get(context.TODO(), cmName, meta.GetOptions{})
+		if err != nil {
+			if !apierrors.IsNotFound(err) {
+				return false, errors.Wrapf(err, "error retrieving ConfigMap: %s", cmName)
+			}
+		}
+		// retry until timeout if the error is a resource NotFound error
+		return err == nil, nil
+	})
+	if err != nil {
+		return errors.Wrapf(err, "error waiting for ConfigMap %s/%s to be re-created", tc.namespace, cmName)
+	}
+	return nil
 }
 
 // testCSRApproval tests if the BYOH CSR's have been approved by WMCO CSR approver
