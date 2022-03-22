@@ -338,3 +338,48 @@ func (r *ConfigMapReconciler) createServicesConfigMap(ctx context.Context, names
 	r.log.Info("Created", "ConfigMap", namespacedName)
 	return windowsServices, nil
 }
+
+// EnsureServicesConfigMapExists ensures that the ServicesConfigMap is present and valid on the cluster during operator
+// bootup. ConfigMapReconciler.createServicesConfigMap() cannot be called in its stead as the cache has not been
+// populated yet, which is why the typed client is used here as it calls the API server directly.
+func (r *ConfigMapReconciler) EnsureServicesConfigMapExists() error {
+	windowsServices, err := r.k8sclientset.CoreV1().ConfigMaps(r.watchNamespace).Get(context.TODO(), servicescm.Name,
+		meta.GetOptions{})
+	if err != nil {
+		if !k8sapierrors.IsNotFound(err) {
+			return err
+		}
+		// If ConfigMap is not found, create it and return
+		windowsServices, err = servicescm.Generate(servicescm.Name, r.watchNamespace)
+		if err != nil {
+			return err
+		}
+		if _, err = r.k8sclientset.CoreV1().ConfigMaps(r.watchNamespace).Create(context.TODO(), windowsServices,
+			meta.CreateOptions{}); err != nil {
+			return err
+		}
+		r.log.Info("Created", "ConfigMap", kubeTypes.NamespacedName{Namespace: r.watchNamespace, Name: servicescm.Name})
+		return nil
+	}
+
+	// If a ConfigMap with incorrect values is found, WMCO will delete and recreate it with the proper values
+	if _, err := servicescm.Parse(windowsServices.Data); err != nil {
+		if err = r.k8sclientset.CoreV1().ConfigMaps(r.watchNamespace).Delete(context.TODO(), servicescm.Name,
+			meta.DeleteOptions{}); err != nil {
+			return err
+		}
+		r.log.Info("Deleted invalid resource", "ConfigMap",
+			kubeTypes.NamespacedName{Namespace: r.watchNamespace, Name: servicescm.Name}, "Error", err.Error())
+
+		windowsServices, err = servicescm.Generate(servicescm.Name, r.watchNamespace)
+		if err != nil {
+			return err
+		}
+		if _, err = r.k8sclientset.CoreV1().ConfigMaps(r.watchNamespace).Create(context.TODO(), windowsServices,
+			meta.CreateOptions{}); err != nil {
+			return err
+		}
+		r.log.Info("Created", "ConfigMap", kubeTypes.NamespacedName{Namespace: r.watchNamespace, Name: servicescm.Name})
+	}
+	return nil
+}
