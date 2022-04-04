@@ -6,8 +6,10 @@ import (
 	"testing"
 
 	config "github.com/openshift/api/config/v1"
+	"github.com/pkg/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
@@ -82,6 +84,34 @@ func testReAddInstance(t *testing.T) {
 	require.NoError(t, err, "error retrieving windows-instances ConfigMap")
 	require.NotEmpty(t, windowsInstances.Data, "no instances to remove")
 
+	addr, data, err := tc.removeSingleInstanceEntry(windowsInstances)
+	require.NoError(t, err)
+
+	// Ensure operator communicates to OLM that upgrade is not safe when processing BYOH nodes
+	err = tc.validateUpgradeableCondition(metav1.ConditionFalse)
+	require.NoError(t, err, "operator Upgradeable condition not in proper state")
+
+	// wait for the node to be removed
+	err = tc.waitForWindowsNodes(gc.numberOfBYOHNodes-1, false, true, true)
+	require.NoError(t, err, "error waiting for the removal of a node")
+
+	err = tc.addSingleInstanceEntry(windowsInstances, addr, data)
+	require.NoError(t, err)
+
+	// wait for the node to be successfully re-added
+	err = tc.waitForWindowsNodes(gc.numberOfBYOHNodes, false, true, true)
+	assert.NoError(t, err, "error waiting for the Windows node to be re-added")
+
+	err = tc.validateUpgradeableCondition(metav1.ConditionTrue)
+	require.NoError(t, err, "operator Upgradeable condition not in proper state")
+}
+
+// Deletes a single entry from the instances ConfigMap. Returns the address and associated data of the deleted entry
+func (tc *testContext) removeSingleInstanceEntry(windowsInstances *corev1.ConfigMap) (string, string, error) {
+	if len(windowsInstances.Data) == 0 {
+		return "", "", errors.New("no instances to remove")
+	}
+
 	// Read a single entry from the ConfigMap data
 	var addr, data string
 	for addr, data = range windowsInstances.Data {
@@ -94,38 +124,38 @@ func testReAddInstance(t *testing.T) {
 	patchData := []*patch.JSONPatch{patch.NewJSONPatch("remove", "/data", windowsInstances.Data)}
 	// convert patch data to bytes
 	patchDataBytes, err := json.Marshal(patchData)
-	require.NoError(t, err, "error getting patch data in bytes")
+	if err != nil {
+		return "", "", errors.Wrapf(err, "error getting patch data in bytes")
+	}
 
-	windowsInstances, err = tc.client.K8s.CoreV1().ConfigMaps(tc.namespace).Patch(context.TODO(),
+	_, err = tc.client.K8s.CoreV1().ConfigMaps(tc.namespace).Patch(context.TODO(),
 		wiparser.InstanceConfigMap, types.JSONPatchType, patchDataBytes, metav1.PatchOptions{})
-	require.NoError(t, err, "error patching windows-instances ConfigMap data with remove operation")
-	// Ensure operator communicates to OLM that upgrade is not safe when processing BYOH nodes
-	err = tc.validateUpgradeableCondition(metav1.ConditionFalse)
-	require.NoError(t, err, "operator Upgradeable condition not in proper state")
+	if err != nil {
+		return "", "", errors.Wrapf(err, "error patching windows-instances ConfigMap data with remove operation")
+	}
+	return addr, data, nil
+}
 
-	// wait for the node to be removed
-	err = tc.waitForWindowsNodes(gc.numberOfBYOHNodes-1, false, true, true)
-	require.NoError(t, err, "error waiting for the removal of a node")
-
+// Adds a single entry to the instances ConfigMap
+func (tc *testContext) addSingleInstanceEntry(windowsInstances *corev1.ConfigMap, addr, data string) error {
 	// update the ConfigMap again, re-adding the instance
 	if windowsInstances.Data == nil {
 		windowsInstances.Data = make(map[string]string)
 	}
 	windowsInstances.Data[addr] = data
 
-	patchData = []*patch.JSONPatch{patch.NewJSONPatch("add", "/data", windowsInstances.Data)}
+	patchData := []*patch.JSONPatch{patch.NewJSONPatch("add", "/data", windowsInstances.Data)}
 	// convert patch data to bytes
-	patchDataBytes, err = json.Marshal(patchData)
-	require.NoError(t, err, "error getting patch data in bytes")
+	patchDataBytes, err := json.Marshal(patchData)
+	if err != nil {
+		return errors.Wrapf(err, "error getting patch data in bytes")
+	}
 
-	windowsInstances, err = tc.client.K8s.CoreV1().ConfigMaps(tc.namespace).Patch(context.TODO(),
+	_, err = tc.client.K8s.CoreV1().ConfigMaps(tc.namespace).Patch(context.TODO(),
 		wiparser.InstanceConfigMap, types.JSONPatchType, patchDataBytes, metav1.PatchOptions{})
-	require.NoError(t, err, "error patching windows-instances ConfigMap data with add operation")
 
-	// wait for the node to be successfully re-added
-	err = tc.waitForWindowsNodes(gc.numberOfBYOHNodes, false, true, true)
-	assert.NoError(t, err, "error waiting for the Windows node to be re-added")
-
-	err = tc.validateUpgradeableCondition(metav1.ConditionTrue)
-	require.NoError(t, err, "operator Upgradeable condition not in proper state")
+	if err != nil {
+		return errors.Wrapf(err, "error patching windows-instances ConfigMap data with add operation")
+	}
+	return nil
 }

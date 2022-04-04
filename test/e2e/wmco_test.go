@@ -49,6 +49,7 @@ func TestWMCO(t *testing.T) {
 	t.Run("create", creationTestSuite)
 	t.Run("network", testNetwork)
 	t.Run("upgrade", upgradeTestSuite)
+	t.Run("concurrency", concurrencySuite)
 	// The reconfigurationTestSuite must be run directly before the deletionTestSuite. This is because we do not
 	// currently wait for nodes to fully reconcile after changing the private key back to the valid key. Any tests
 	// added/moved in between these two suites may fail.
