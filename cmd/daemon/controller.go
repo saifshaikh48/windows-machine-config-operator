@@ -23,6 +23,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"k8s.io/klog/v2"
+	ctrl "sigs.k8s.io/controller-runtime"
 
 	"github.com/openshift/windows-machine-config-operator/pkg/daemon/controller"
 )
@@ -44,8 +45,9 @@ func init() {
 }
 
 func runControllerCmd(cmd *cobra.Command, args []string) {
+	ctx := ctrl.SetupSignalHandler()
 	klog.Info("service controller running")
-	if err := controller.RunController(kubeconfig); err != nil {
+	if err := controller.RunController(ctx, kubeconfig); err != nil {
 		klog.Error(err)
 		os.Exit(1)
 	}

@@ -39,6 +39,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	"github.com/openshift/windows-machine-config-operator/pkg/daemon/winsvc"
@@ -63,42 +64,49 @@ type ServiceController struct {
 }
 
 // RunController is the entry point of WICD's controller functionality
-func RunController(kubeconfigPath string) error {
-	svcMgr, err := winsvc.NewMgr()
+func RunController(ctx context.Context, kubeconfigPath string) error {
+	ctrlMgr, sc, err := NewControllerWithManager(ctx, kubeconfigPath)
 	if err != nil {
 		return err
 	}
+	klog.Info("Starting manager, awaiting events")
+	if err := ctrlMgr.Start(sc.ctx); err != nil {
+		return err
+	}
+	return nil
+}
+
+func NewControllerWithManager(ctx context.Context, kubeconfigPath string) (manager.Manager, *ServiceController, error) {
 	config, err := clientcmd.BuildConfigFromFlags("", kubeconfigPath)
 	if err != nil {
-		return errors.Wrap(err, "error using kubeconfig to build config")
+		return nil, nil, errors.Wrap(err, "error using kubeconfig to build config")
 	}
 
 	clientScheme := runtime.NewScheme()
 	err = clientgoscheme.AddToScheme(clientScheme)
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
 	// This is a client that reads directly from the server, not a cached client. This is required to be used here, as
 	// the cached client, created by ctrl.NewManager() will not be functional until the manager is started.
 	directClient, err := client.New(config, client.Options{Scheme: clientScheme})
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
 
 	// use the client to find the name of the node associated with the VM this is running on
-	ctx := ctrl.SetupSignalHandler()
 	var nodes core.NodeList
 	err = directClient.List(ctx, &nodes)
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
 	addrs, err := localInterfaceAddresses()
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
 	node, err := findNodeByAddress(&nodes, addrs)
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
 
 	ctrlMgr, err := ctrl.NewManager(config, ctrl.Options{
@@ -106,17 +114,19 @@ func RunController(kubeconfigPath string) error {
 		Scheme:    clientScheme,
 	})
 	if err != nil {
-		return errors.Wrap(err, "unable to start manager")
+		return nil, nil, errors.Wrap(err, "unable to start manager")
 	}
+
+	svcMgr, err := winsvc.NewMgr()
+	if err != nil {
+		return nil, nil, err
+	}
+
 	sc := NewServiceController(ctx, ctrlMgr.GetClient(), svcMgr, node.Name)
 	if err = sc.SetupWithManager(ctrlMgr); err != nil {
-		return err
+		return nil, nil, err
 	}
-	klog.Info("Starting manager, awaiting events")
-	if err := ctrlMgr.Start(ctx); err != nil {
-		return err
-	}
-	return nil
+	return ctrlMgr, sc, nil
 }
 
 // NewServiceController returns a pointer to a ServiceController object
