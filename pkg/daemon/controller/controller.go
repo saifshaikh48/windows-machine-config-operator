@@ -104,9 +104,10 @@ func NewControllerWithManager(ctx context.Context, kubeconfigPath string) (manag
 	if err != nil {
 		return nil, nil, err
 	}
-	node, err := findNodeByAddress(&nodes, addrs)
-	if err != nil {
-		return nil, nil, err
+	nodeName := ""
+	node, _ := findNodeByAddress(&nodes, addrs)
+	if node != nil {
+		nodeName = node.Name
 	}
 
 	ctrlMgr, err := ctrl.NewManager(config, ctrl.Options{
@@ -122,7 +123,7 @@ func NewControllerWithManager(ctx context.Context, kubeconfigPath string) (manag
 		return nil, nil, err
 	}
 
-	sc := NewServiceController(ctx, ctrlMgr.GetClient(), svcMgr, node.Name)
+	sc := NewServiceController(ctx, ctrlMgr.GetClient(), svcMgr, nodeName)
 	if err = sc.SetupWithManager(ctrlMgr); err != nil {
 		return nil, nil, err
 	}
@@ -161,6 +162,20 @@ func (sc *ServiceController) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&core.Node{}, builder.WithPredicates(nodePredicate)).
 		Complete(sc)
+}
+
+// Bootstrap starts all required Windows services on this instance. This will result in a node object being created
+func (sc *ServiceController) Bootstrap(services []servicescm.Service) error {
+	bootstrapServices := []servicescm.Service{}
+	for _, svc := range services {
+		if svc.Bootstrap {
+			bootstrapServices = append(bootstrapServices, svc)
+		} else {
+			// services are pre-sorted by priority, with all bootstrap services ordered towards the front of the slice
+			break
+		}
+	}
+	return sc.reconcileServices(bootstrapServices)
 }
 
 // Reconcile fulfills the Reconciler interface
@@ -325,6 +340,10 @@ func (sc *ServiceController) expectedServiceCommand(expected servicescm.Service)
 // resolveNodeVariables returns a map, with the keys being each variable, and the value being the string to replace the
 // variable with
 func (sc *ServiceController) resolveNodeVariables(svc servicescm.Service) (map[string]string, error) {
+	if sc.nodeName == "" {
+		return nil, errors.New("instance has no associated node")
+	}
+
 	vars := make(map[string]string)
 	var node core.Node
 	err := sc.client.Get(sc.ctx, client.ObjectKey{Name: sc.nodeName}, &node)
