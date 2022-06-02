@@ -246,7 +246,7 @@ func (f FileInfo) isPresentAndCorrect(files []FileInfo) bool {
 	return false
 }
 
-// validateDependencies ensures that no bootstrap service depends on a non-bootstrap service
+// validateDependencies ensures that no bootstrap service depends on a non-bootstrap service or node object
 func validateDependencies(services []Service) error {
 	bootstrapServices := []Service{}
 	nonBootstrapServices := []Service{}
@@ -259,6 +259,9 @@ func validateDependencies(services []Service) error {
 	}
 
 	for _, bootstrapSvc := range bootstrapServices {
+		if len(bootstrapSvc.NodeVariablesInCommand) > 0 {
+			return errors.Errorf("bootstrap service %s cannot require node variables in command", bootstrapSvc.Name)
+		}
 		if bootstrapSvc.hasDependency(nonBootstrapServices) {
 			return errors.Errorf("bootstrap service %s cannot depend on non-bootstrap service", bootstrapSvc.Name)
 		}
