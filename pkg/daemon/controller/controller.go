@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"net"
 	"reflect"
+	"sort"
 	"strings"
 
 	"github.com/pkg/errors"
@@ -203,6 +204,8 @@ func (sc *ServiceController) Reconcile(_ context.Context, req ctrl.Request) (res
 }
 
 // Cleanup removes an instance from the cluster. If the parameter flag is true, the node object is not deleted.
+// If we are able to get the services ConfigMap tied to the desired version, all services defined in it are cleaned up.
+// Otherwise, perform cleanup based on a combination of the OpenShift managed tag and the latest services ConfigMap.
 func (sc *ServiceController) Cleanup(preserveNode bool) error {
 	var node core.Node
 	err := sc.client.Get(sc.ctx, client.ObjectKey{Name: sc.nodeName}, &node)
@@ -211,17 +214,69 @@ func (sc *ServiceController) Cleanup(preserveNode bool) error {
 	}
 
 	desiredVersion, present := node.Annotations[nodeconfig.DesiredVersionAnnotation]
+	// If the desired version annotation or ConfigMap tied to it is not present, use a best effort cleanup stategy
 	if !present {
-		return errors.Errorf("node missing desired version annotation")
+		klog.Warning("node missing desired version annotation")
+		return sc.outOfSyncCleanup(node, preserveNode)
 	}
 	// Fetch the CM of the desired version
 	cm := &core.ConfigMap{}
 	err = sc.client.Get(sc.ctx,
 		client.ObjectKey{Namespace: sc.watchNamespace, Name: servicescm.NamePrefix + desiredVersion}, cm)
 	if err != nil {
+		if k8sapierrors.IsNotFound(err) {
+			klog.Warningf("unable to find desired version ConfigMap %s", servicescm.NamePrefix+desiredVersion)
+			return sc.outOfSyncCleanup(node, preserveNode)
+		}
 		return err
 	}
 	return sc.removeServices(cm, node, preserveNode)
+}
+
+// outOfSyncCleanup removes all services on the instance with the Openshift managed tag, as well as any services defined
+// in the latest retreivable version of the services ConfigMap
+func (sc *ServiceController) outOfSyncCleanup(node core.Node, preserveNode bool) error {
+	klog.Infof("cleaning up all %s Windows services", windows.ManagedTag)
+	existingSvcs, err := sc.getExistingServices()
+	if err != nil {
+		return errors.Wrap(err, "could not determine existing Windows services")
+	}
+	for service := range existingSvcs {
+		if err := sc.ensureServiceIsRemoved(service, true); err != nil {
+			return err
+		}
+	}
+	// Try to get the latest services ConfigMap. If it exists, the services in it will be deconfigured.
+	// This will enable clean up instances even if service descriptions were somehow overwritten.
+	cm, err := sc.getLatestServicesCM()
+	if err != nil {
+		klog.Warningf("unable to find latest services ConfigMap: %s", err.Error())
+		// Delete node object before returning if further cleanup cannot occur
+		if !preserveNode {
+			if err = sc.client.Delete(sc.ctx, &node); err != nil {
+				return errors.Wrapf(err, "error deleting node %s", node.GetName())
+			}
+			klog.Infof("deleted node %s", node.GetName())
+		}
+		return nil
+	}
+	return sc.removeServices(cm, node, preserveNode)
+}
+
+// getLatestServicesCM returns the most recently created services ConfigMap in the cluster or an error if none exists.
+func (sc *ServiceController) getLatestServicesCM() (*core.ConfigMap, error) {
+	servicesCMs, err := servicescm.ListServiceConfigMaps(sc.client, sc.ctx, sc.watchNamespace)
+	if err != nil {
+		return nil, err
+	}
+	if len(servicesCMs) == 0 {
+		return nil, errors.Errorf("no services ConfigMaps found in namespace %s", sc.watchNamespace)
+	}
+	// sort with most recently created first
+	sort.Slice(servicesCMs, func(i, j int) bool {
+		return servicesCMs[i].CreationTimestamp.After(servicesCMs[j].CreationTimestamp.Time)
+	})
+	return &servicesCMs[0], nil
 }
 
 // removeServices removes all the services defined in the given ConfigMap from this instance.
@@ -233,7 +288,7 @@ func (sc *ServiceController) removeServices(cm *core.ConfigMap, node core.Node, 
 		return err
 	}
 	for _, service := range cmData.Services {
-		if err := sc.ensureServiceIsRemoved(service.Name); err != nil {
+		if err := sc.ensureServiceIsRemoved(service.Name, false); err != nil {
 			return err
 		}
 	}
@@ -248,7 +303,8 @@ func (sc *ServiceController) removeServices(cm *core.ConfigMap, node core.Node, 
 }
 
 // ensureServiceIsRemoved deletes the given service and all services that depend on it, even those unmanaged by WICD.
-func (sc *ServiceController) ensureServiceIsRemoved(name string) error {
+// If the managedOnly flag is true, only services with the managed tag will be removed.
+func (sc *ServiceController) ensureServiceIsRemoved(name string, managedOnly bool) error {
 	existingSvcs, err := sc.getExistingServices()
 	if err != nil {
 		return errors.Wrap(err, "could not determine existing Windows services")
@@ -262,6 +318,14 @@ func (sc *ServiceController) ensureServiceIsRemoved(name string) error {
 	winSvcObj, err := sc.OpenService(name)
 	if err != nil {
 		return errors.Wrapf(err, "unable to open %s service handler", name)
+	}
+	config, err := winSvcObj.Config()
+	if err != nil {
+		return err
+	}
+	// If we are considering only WICD-managed services, nothing to do if the service doesn't have the expected tag
+	if managedOnly && !strings.HasPrefix(config.Description, windows.ManagedTag) {
+		return nil
 	}
 
 	status, err := winSvcObj.Query()
@@ -315,7 +379,7 @@ func (sc *ServiceController) removeDependentServices(service string, existingSvc
 			}
 			if status.State != svc.Stopped {
 				klog.Warningf("stopping service %s as it depends on %s", existingSvc, service)
-				if err := sc.ensureServiceIsRemoved(existingSvc); err != nil {
+				if err := sc.ensureServiceIsRemoved(existingSvc, false); err != nil {
 					return err
 				}
 			}
