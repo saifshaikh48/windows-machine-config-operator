@@ -22,6 +22,7 @@ import (
 	"github.com/openshift/windows-machine-config-operator/pkg/daemon/winsvc"
 	"github.com/openshift/windows-machine-config-operator/pkg/nodeconfig"
 	"github.com/openshift/windows-machine-config-operator/pkg/servicescm"
+	"github.com/openshift/windows-machine-config-operator/pkg/windows"
 )
 
 func TestResolveNodeVariables(t *testing.T) {
@@ -423,6 +424,300 @@ func TestReconcile(t *testing.T) {
 			require.NoError(t, err)
 
 			testServicesCreatedAsExpected(t, createdServices, test.expectedServicesNameCmdPairs)
+		})
+	}
+}
+
+func TestCleanup(t *testing.T) {
+	testIO := []struct {
+		name                      string
+		existingServices          map[string]*winsvc.FakeService
+		expectedRemovedServices   []string
+		expectedRemainingServices []string
+		preserveNode              bool
+		configMapServices         []servicescm.Service
+	}{
+		{
+			name:                      "No services",
+			existingServices:          map[string]*winsvc.FakeService{},
+			expectedRemovedServices:   []string{},
+			expectedRemainingServices: []string{},
+			preserveNode:              false,
+			configMapServices:         []servicescm.Service{},
+		},
+		{
+			name:                      "Upgrade scenario with no services",
+			existingServices:          map[string]*winsvc.FakeService{},
+			expectedRemovedServices:   []string{},
+			expectedRemainingServices: []string{},
+			preserveNode:              true,
+			configMapServices:         []servicescm.Service{},
+		},
+		{
+			name: "Single service",
+			existingServices: map[string]*winsvc.FakeService{
+				"test1": winsvc.NewFakeService(
+					"test1",
+					mgr.Config{
+						BinaryPathName: "test1 --node-name=node",
+						Dependencies:   []string{},
+						Description:    windows.ManagedTag + " test1",
+					},
+					svc.Status{State: svc.Running},
+				),
+			},
+			expectedRemovedServices:   []string{"test1"},
+			expectedRemainingServices: []string{},
+			preserveNode:              false,
+			configMapServices: []servicescm.Service{
+				{
+					Name:    "test1",
+					Command: "test1 --node-name=NODENAME",
+					NodeVariablesInCommand: []servicescm.NodeCmdArg{{
+						Name:               "NODENAME",
+						NodeObjectJsonPath: "{.metadata.name}",
+					}},
+					Dependencies: nil,
+					Bootstrap:    false,
+					Priority:     0,
+				},
+			},
+		},
+		{
+			name: "Upgrade scenario with multiple services",
+			existingServices: map[string]*winsvc.FakeService{
+				"test1": winsvc.NewFakeService(
+					"test1",
+					mgr.Config{
+						BinaryPathName: "test1 arg1",
+						Dependencies:   []string{},
+						Description:    windows.ManagedTag + " test1",
+					},
+					svc.Status{State: svc.Running},
+				),
+				"test2": winsvc.NewFakeService(
+					"test2",
+					mgr.Config{
+						BinaryPathName: "test2 arg1 arg2",
+						Dependencies:   []string{},
+						Description:    windows.ManagedTag + " test2",
+					},
+					svc.Status{State: svc.Running},
+				),
+				"test3-unmanaged": winsvc.NewFakeService(
+					"test3-unmanaged",
+					mgr.Config{
+						BinaryPathName: "test3-unmanaged",
+						Dependencies:   []string{},
+					},
+					svc.Status{State: svc.Running},
+				),
+			},
+			expectedRemovedServices:   []string{"test1", "test2"},
+			expectedRemainingServices: []string{"test3-unmanaged"},
+			preserveNode:              true,
+			configMapServices: []servicescm.Service{
+				{
+					Name:         "test1",
+					Command:      "test1 arg1",
+					Dependencies: nil,
+					Bootstrap:    false,
+					Priority:     0,
+				},
+				{
+					Name:         "test2",
+					Command:      "test2 arg1 arg2",
+					Dependencies: nil,
+					Bootstrap:    false,
+					Priority:     0,
+				},
+			},
+		},
+		{
+			name: "Multiple services with only managed dependencies",
+			existingServices: map[string]*winsvc.FakeService{
+				"test1": winsvc.NewFakeService(
+					"test1",
+					mgr.Config{
+						BinaryPathName: "test1 arg1",
+						Dependencies:   []string{"test2", "test4"},
+						Description:    windows.ManagedTag + " test1",
+					},
+					svc.Status{State: svc.Running},
+				),
+				"test2": winsvc.NewFakeService(
+					"test2",
+					mgr.Config{
+						BinaryPathName: "test2 arg1 arg2",
+						Dependencies:   []string{},
+						Description:    windows.ManagedTag + " test2",
+					},
+					svc.Status{State: svc.Running},
+				),
+				"test3": winsvc.NewFakeService(
+					"test3",
+					mgr.Config{
+						BinaryPathName: "test3",
+						Dependencies:   []string{"test4"},
+						Description:    windows.ManagedTag + " test3",
+					},
+					svc.Status{State: svc.Running},
+				),
+				"test4": winsvc.NewFakeService(
+					"test4",
+					mgr.Config{
+						BinaryPathName: "test4",
+						Dependencies:   []string{},
+						Description:    windows.ManagedTag + " test4",
+					},
+					svc.Status{State: svc.Running},
+				),
+				"test5-unmanaged": winsvc.NewFakeService(
+					"test5-unmanaged",
+					mgr.Config{
+						BinaryPathName: "test5-unmanaged",
+						Dependencies:   []string{},
+					},
+					svc.Status{State: svc.Running},
+				),
+			},
+			expectedRemovedServices:   []string{"test1", "test5-umnanaged", "test3", "test4"},
+			expectedRemainingServices: []string{"test2"},
+			preserveNode:              false,
+			configMapServices: []servicescm.Service{
+				{
+					Name:         "test1",
+					Command:      "test1 arg1",
+					Dependencies: []string{"test3", "test4"},
+					Bootstrap:    false,
+					Priority:     3,
+				},
+				{
+					Name:         "test3",
+					Command:      "test3",
+					Dependencies: nil,
+					Bootstrap:    false,
+					Priority:     1,
+				},
+				{
+					Name:         "test4",
+					Command:      "test4",
+					Dependencies: nil,
+					Bootstrap:    false,
+					Priority:     0,
+				},
+				{
+					Name:         "test5-unmanaged",
+					Command:      "test5-unmanaged",
+					Dependencies: nil,
+					Bootstrap:    false,
+					Priority:     0,
+				},
+			},
+		},
+		{
+			name: "Multiple services including unmanaged dependencies",
+			existingServices: map[string]*winsvc.FakeService{
+				"test1": winsvc.NewFakeService(
+					"test1",
+					mgr.Config{
+						BinaryPathName: "test1 arg1",
+						Dependencies:   []string{"test2", "test3-unmanaged"},
+						Description:    windows.ManagedTag + " test1",
+					},
+					svc.Status{State: svc.Running},
+				),
+				"test2": winsvc.NewFakeService(
+					"test2",
+					mgr.Config{
+						BinaryPathName: "test2 arg1 arg2",
+						Dependencies:   []string{},
+						Description:    windows.ManagedTag + " test2",
+					},
+					svc.Status{State: svc.Running},
+				),
+				"test3-unmanaged": winsvc.NewFakeService(
+					"test3-unmanaged",
+					mgr.Config{
+						BinaryPathName: "test3-unmanaged",
+						Dependencies:   []string{},
+					},
+					svc.Status{State: svc.Running},
+				),
+			},
+			expectedRemovedServices:   []string{"test1", "test2", "test3-unmanaged"},
+			expectedRemainingServices: []string{},
+			preserveNode:              false,
+			configMapServices: []servicescm.Service{
+				{
+					Name:         "test1",
+					Command:      "test1 arg1",
+					Dependencies: []string{"test2", "test3-unmanaged"},
+					Bootstrap:    false,
+					Priority:     3,
+				},
+				{
+					Name:         "test2",
+					Command:      "test2 arg1 arg2",
+					Dependencies: []string{},
+					Bootstrap:    false,
+					Priority:     2,
+				},
+				{
+					Name:         "test3-unmanaged",
+					Command:      "test3-unmanaged",
+					Dependencies: nil,
+					Bootstrap:    false,
+					Priority:     0,
+				},
+			},
+		},
+	}
+	for _, test := range testIO {
+		t.Run(test.name, func(t *testing.T) {
+			desiredVersion := "testversion"
+			// This ConfigMap's name must match with the given Node object's desired-version annotation
+			cm, err := servicescm.Generate(servicescm.NamePrefix+desiredVersion,
+				"openshift-windows-machine-config-operator", &servicescm.Data{test.configMapServices,
+					[]servicescm.FileInfo{}})
+			require.NoError(t, err)
+			clusterObjs := []client.Object{
+				// This is the node object that will be used in these test cases
+				&core.Node{
+					ObjectMeta: meta.ObjectMeta{
+						Name: "node",
+						Annotations: map[string]string{
+							nodeconfig.DesiredVersionAnnotation: desiredVersion,
+						},
+					},
+				},
+				cm,
+			}
+			fakeClient := fake.NewClientBuilder().WithObjects(clusterObjs...).Build()
+
+			winSvcMgr := winsvc.NewTestMgr(test.existingServices)
+			c := NewServiceController(context.TODO(), fakeClient, winSvcMgr, "node")
+			err = c.Cleanup(test.preserveNode)
+			require.NoError(t, err)
+			allServices, err := getAllFakeServices(winSvcMgr)
+			require.NoError(t, err)
+
+			for _, svc := range test.expectedRemovedServices {
+				_, present := allServices[svc]
+				assert.Falsef(t, present, "service %s not removed as expected", svc)
+			}
+			for _, svc := range test.expectedRemainingServices {
+				_, present := allServices[svc]
+				assert.Truef(t, present, "service %s not present as expected", svc)
+			}
+			// Depending on if the test is an upgrade cleanup case, check if the node object has been deleted or not
+			nodes := &core.NodeList{}
+			require.NoError(t, c.client.List(context.TODO(), nodes))
+			if test.preserveNode {
+				assert.NotZero(t, len(nodes.Items))
+			} else {
+				assert.Zero(t, len(nodes.Items))
+			}
 		})
 	}
 }

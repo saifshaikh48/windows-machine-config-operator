@@ -202,6 +202,128 @@ func (sc *ServiceController) Reconcile(_ context.Context, req ctrl.Request) (res
 	return ctrl.Result{}, nil
 }
 
+// Cleanup removes an instance from the cluster. If the parameter flag is true, the node object is not deleted.
+func (sc *ServiceController) Cleanup(preserveNode bool) error {
+	var node core.Node
+	err := sc.client.Get(sc.ctx, client.ObjectKey{Name: sc.nodeName}, &node)
+	if err != nil {
+		return err
+	}
+
+	desiredVersion, present := node.Annotations[nodeconfig.DesiredVersionAnnotation]
+	if !present {
+		return errors.Errorf("node missing desired version annotation")
+	}
+	// Fetch the CM of the desired version
+	cm := &core.ConfigMap{}
+	err = sc.client.Get(sc.ctx,
+		client.ObjectKey{Namespace: sc.watchNamespace, Name: servicescm.NamePrefix + desiredVersion}, cm)
+	if err != nil {
+		return err
+	}
+	return sc.removeServices(cm, node, preserveNode)
+}
+
+// removeServices removes all the services defined in the given ConfigMap from this instance.
+// The given Node object is deleted if the given flag is false
+func (sc *ServiceController) removeServices(cm *core.ConfigMap, node core.Node, preserveNode bool) error {
+	klog.Infof("removing services defined in ConfigMap %s", cm.Name)
+	cmData, err := servicescm.Parse(cm.Data)
+	if err != nil {
+		return err
+	}
+	for _, service := range cmData.Services {
+		if err := sc.ensureServiceIsRemoved(service.Name); err != nil {
+			return err
+		}
+	}
+
+	if !preserveNode {
+		if err = sc.client.Delete(sc.ctx, &node); err != nil {
+			return errors.Wrapf(err, "error deleting node %s", node.GetName())
+		}
+		klog.Infof("deleted node %s", node.GetName())
+	}
+	return nil
+}
+
+// ensureServiceIsRemoved deletes the given service and all services that depend on it, even those unmanaged by WICD.
+func (sc *ServiceController) ensureServiceIsRemoved(name string) error {
+	existingSvcs, err := sc.getExistingServices()
+	if err != nil {
+		return errors.Wrap(err, "could not determine existing Windows services")
+	}
+	// Nothing to do if it already does not exist
+	if _, present := existingSvcs[name]; !present {
+		return nil
+	}
+
+	// Open the service to get a service handle
+	winSvcObj, err := sc.OpenService(name)
+	if err != nil {
+		return errors.Wrapf(err, "unable to open %s service handler", name)
+	}
+
+	status, err := winSvcObj.Query()
+	if err != nil {
+		return errors.Wrapf(err, "unable to query %s service status", name)
+	}
+	// Delete the service and return if it's already stopped
+	if status.State == svc.Stopped {
+		if err := winSvcObj.Delete(); err != nil {
+			return errors.Wrapf(err, "failed to delete service %s", name)
+		}
+		klog.Infof("removed service %s", name)
+		return nil
+	}
+
+	// Ensure no dependent services are running before stopping this one. This is needed to safely stop Windows services
+	if err := sc.removeDependentServices(name, existingSvcs); err != nil {
+		return err
+	}
+
+	// Ensure service is stopped before deleting
+	if err := winsvc.EnsureServiceState(winSvcObj, svc.Stopped); err != nil {
+		return errors.Wrapf(err, "failed to stop service %s", name)
+	}
+	if err := winSvcObj.Delete(); err != nil {
+		return errors.Wrapf(err, "failed to delete service %s", name)
+	}
+	klog.Infof("removed service %s", name)
+	return nil
+}
+
+// removeDependentServices stops and deletes all services that depend on the given service
+func (sc *ServiceController) removeDependentServices(service string, existingSvcs map[string]struct{}) error {
+	for existingSvc := range existingSvcs {
+		existingWinSvcObj, err := sc.OpenService(existingSvc)
+		if err != nil {
+			return errors.Wrapf(err, "error opening %s service handler", existingSvc)
+		}
+		existingWinSvcConfig, err := existingWinSvcObj.Config()
+		if err != nil {
+			return errors.Wrapf(err, "error getting configuration for service %s", existingSvc)
+		}
+		for _, dependency := range existingWinSvcConfig.Dependencies {
+			if dependency != service {
+				continue
+			}
+			// Found an existing service that has this one as a dependency, process it if it's not already stopped
+			status, err := existingWinSvcObj.Query()
+			if err != nil {
+				return errors.Wrapf(err, "error querying %s service status", existingSvc)
+			}
+			if status.State != svc.Stopped {
+				klog.Warningf("stopping service %s as it depends on %s", existingSvc, service)
+				if err := sc.ensureServiceIsRemoved(existingSvc); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
+}
+
 // getExistingServices returns a map with the keys being all Windows services currently present on the VM
 func (sc *ServiceController) getExistingServices() (map[string]struct{}, error) {
 	// The most reliable way to determine if a service exists or not is to do a 'list' API call. It is possible to
