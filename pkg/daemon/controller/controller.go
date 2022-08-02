@@ -33,6 +33,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/rest"
 	"k8s.io/client-go/util/jsonpath"
 	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -82,41 +83,16 @@ func (sc *ServiceController) Bootstrap(desiredVersion string) error {
 
 // RunController is the entry point of WICD's controller functionality
 func RunController(ctx context.Context, apiServerURL, saCA, saToken string) error {
-	svcMgr, err := winsvc.NewMgr()
-	if err != nil {
-		return err
-	}
-	cfg, err := config.FromServiceAccount(apiServerURL, saCA, saToken)
-	if err != nil {
-		klog.Error(err)
-		return errors.Wrap(err, "error using service account to build config")
-	}
-
-	clientScheme := runtime.NewScheme()
-	err = clientgoscheme.AddToScheme(clientScheme)
-	if err != nil {
-		return err
-	}
 	// This is a client that reads directly from the server, not a cached client. This is required to be used here, as
 	// the cached client, created by ctrl.NewManager() will not be functional until the manager is started.
-	directClient, err := client.New(cfg, client.Options{Scheme: clientScheme})
+	directClient, cfg, clientScheme, err := NewDirectClient(apiServerURL, saCA, saToken)
 	if err != nil {
 		return err
 	}
 
-	// use the client to find the name of the node associated with the VM this is running on
-	var nodes core.NodeList
-	err = directClient.List(ctx, &nodes)
+	node, err := GetAssociatedNode(directClient)
 	if err != nil {
-		return err
-	}
-	addrs, err := localInterfaceAddresses()
-	if err != nil {
-		return err
-	}
-	node, err := findNodeByAddress(&nodes, addrs)
-	if err != nil {
-		return err
+		errors.Wrap(err, "could not node object associated with this instance")
 	}
 
 	ctrlMgr, err := ctrl.NewManager(cfg, ctrl.Options{
@@ -126,6 +102,12 @@ func RunController(ctx context.Context, apiServerURL, saCA, saToken string) erro
 	if err != nil {
 		return errors.Wrap(err, "unable to start manager")
 	}
+
+	svcMgr, err := winsvc.NewMgr()
+	if err != nil {
+		return err
+	}
+
 	sc := NewServiceController(ctx, ctrlMgr.GetClient(), svcMgr, node.Name)
 	if err = sc.SetupWithManager(ctrlMgr); err != nil {
 		return err
@@ -375,6 +357,44 @@ func (sc *ServiceController) resolveNodeVariables(svc servicescm.Service) (map[s
 func (sc *ServiceController) resolvePowershellVariables(svc servicescm.Service) (map[string]string, error) {
 	// TODO: Implement this function
 	return make(map[string]string), nil
+}
+
+// NewDirectClient creates and returns an authenticated client that reads directly from the API server.
+// It also returns the config and scheme used to created the client.
+func NewDirectClient(apiServerURL, saCA, saToken string) (client.Client, *rest.Config, *runtime.Scheme, error) {
+	cfg, err := config.FromServiceAccount(apiServerURL, saCA, saToken)
+	if err != nil {
+		return nil, nil, nil, errors.Wrap(err, "error using service account to build config: %s")
+	}
+
+	clientScheme := runtime.NewScheme()
+	err = clientgoscheme.AddToScheme(clientScheme)
+	if err = clientgoscheme.AddToScheme(clientScheme); err != nil {
+		return nil, nil, nil, err
+	}
+
+	directClient, err := client.New(cfg, client.Options{Scheme: clientScheme})
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	return directClient, cfg, clientScheme, nil
+}
+
+// GetAssociatedNode uses the given client to find the name of the node associated with the VM this is running on
+func GetAssociatedNode(c client.Client) (*core.Node, error) {
+	var nodes core.NodeList
+	if err := c.List(context.TODO(), &nodes); err != nil {
+		return nil, err
+	}
+	addrs, err := localInterfaceAddresses()
+	if err != nil {
+		return nil, err
+	}
+	node, err := findNodeByAddress(&nodes, addrs)
+	if err != nil {
+		return nil, err
+	}
+	return node, nil
 }
 
 // localInterfaceAddresses returns a slice of all addresses associated with local network interfaces
