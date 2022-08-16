@@ -102,6 +102,15 @@ func (t *testMgr) GetServices() (map[string]struct{}, error) {
 	return svcsMap, nil
 }
 
+func (t *testMgr) ServiceExists(name string) (bool, error) {
+	services, err := t.GetServices()
+	if err != nil {
+		return false, err
+	}
+	_, ok := services[name]
+	return ok, nil
+}
+
 func (t *testMgr) OpenService(name string) (winsvc.Service, error) {
 	service, exists := t.svcList.read(name)
 	if !exists {
@@ -121,6 +130,75 @@ func (t *testMgr) DeleteService(name string) error {
 		return errors.Wrapf(err, "failed to stop service %s", name)
 	}
 	return t.svcList.remove(name)
+}
+
+func (t *testMgr) DeleteServiceAndDependents(name string) error {
+	existingSvcs, err := t.GetServices()
+	if err != nil {
+		return errors.Wrap(err, "could not determine existing Windows services")
+	}
+	// Nothing to do if it already does not exist
+	if _, present := existingSvcs[name]; !present {
+		return nil
+	}
+
+	winSvcObj, err := t.OpenService(name)
+	if err != nil {
+		return errors.Wrapf(err, "unable to open %s service handler", name)
+	}
+	defer winSvcObj.Close()
+
+	status, err := winSvcObj.Query()
+	if err != nil {
+		return errors.Wrapf(err, "unable to query %s service status", name)
+	}
+	// Ensure no dependent services are running before we can safely stop this one
+	if status.State != svc.Stopped {
+		if err := t.removeDependentServices(name, existingSvcs); err != nil {
+			return err
+		}
+	}
+	return t.DeleteService(name)
+}
+
+// removeDependentServices stops and deletes all services that depend on the given service
+func (t *testMgr) removeDependentServices(rootService string, allServices map[string]struct{}) error {
+	for service := range allServices {
+		// Re-query existing services to avoid processing one that has already been removed
+		exists, err := t.ServiceExists(service)
+		if err != nil {
+			return err
+		}
+		if !exists {
+			continue
+		}
+
+		existingWinSvcObj, err := t.OpenService(service)
+		if err != nil {
+			return errors.Wrapf(err, "error opening %s service handler", service)
+		}
+		existingWinSvcConfig, err := existingWinSvcObj.Config()
+		if err != nil {
+			return errors.Wrapf(err, "error getting configuration for service %s", service)
+		}
+		for _, dependency := range existingWinSvcConfig.Dependencies {
+			if dependency != rootService {
+				continue
+			}
+			// Found an existing service that has the root one as a dependency, process it if it's not already stopped
+			status, err := existingWinSvcObj.Query()
+			if err != nil {
+				return errors.Wrapf(err, "error querying %s service status", service)
+			}
+			if status.State == svc.Stopped {
+				continue
+			}
+			if err = t.DeleteServiceAndDependents(service); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func NewTestMgr(existingServices map[string]*FakeService) *testMgr {
