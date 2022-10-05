@@ -27,8 +27,8 @@ const (
 
 // GenerateManifest returns the expected state of the Windows service configmap. If debug is true, debug logging
 // will be enabled for services that support it.
-func GenerateManifest(kubeletArgsFromIgnition map[string]string, vxlanPort, platform string, debug bool) (*servicescm.Data, error) {
-	kubeletConfiguration, err := getKubeletServiceConfiguration(kubeletArgsFromIgnition, debug, platform)
+func GenerateManifest(vxlanPort, platform string, debug bool) (*servicescm.Data, error) {
+	kubeletConfiguration, err := getKubeletServiceConfiguration(debug, platform)
 	if err != nil {
 		return nil, errors.Wrap(err, "could not determine kubelet service configuration spec")
 	}
@@ -114,8 +114,8 @@ func kubeProxyConfiguration(debug bool) servicescm.Service {
 }
 
 // getKubeletServiceConfiguration returns the Service definition for the kubelet
-func getKubeletServiceConfiguration(argsFromIginition map[string]string, debug bool, platform string) (servicescm.Service, error) {
-	kubeletArgs, err := generateKubeletArgs(argsFromIginition, debug)
+func getKubeletServiceConfiguration(debug bool, platform string) (servicescm.Service, error) {
+	kubeletArgs, err := generateKubeletArgs(debug)
 	if err != nil {
 		return servicescm.Service{}, err
 	}
@@ -149,7 +149,7 @@ func getKubeletServiceConfiguration(argsFromIginition map[string]string, debug b
 }
 
 // generateKubeletArgs returns the kubelet args required during initial kubelet start up
-func generateKubeletArgs(argsFromIgnition map[string]string, debug bool) ([]string, error) {
+func generateKubeletArgs(debug bool) ([]string, error) {
 	containerdEndpointValue := "npipe://./pipe/containerd-containerd"
 	certDirectory := "c:\\var\\lib\\kubelet\\pki\\"
 	windowsTaints := "os=Windows:NoSchedule"
@@ -169,8 +169,12 @@ func generateKubeletArgs(argsFromIgnition map[string]string, debug bool) ([]stri
 		"--container-runtime-endpoint=" + containerdEndpointValue,
 		"--resolv-conf=",
 	}
-
 	kubeletArgs = append(kubeletArgs, klogVerbosityArg(debug))
+
+	argsFromIgnition, err := ignition.RenderedWorker.GetKubeletArgs()
+	if err != nil {
+		return nil, err
+	}
 	if cloudProvider, ok := argsFromIgnition[ignition.CloudProviderOption]; ok {
 		kubeletArgs = append(kubeletArgs, fmt.Sprintf("--%s=%s", ignition.CloudProviderOption, cloudProvider))
 	}

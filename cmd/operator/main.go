@@ -19,11 +19,13 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/config"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
 	"github.com/openshift/windows-machine-config-operator/controllers"
 	"github.com/openshift/windows-machine-config-operator/pkg/cluster"
+	"github.com/openshift/windows-machine-config-operator/pkg/ignition"
 	"github.com/openshift/windows-machine-config-operator/pkg/metrics"
 	"github.com/openshift/windows-machine-config-operator/pkg/nodeconfig/payload"
 	"github.com/openshift/windows-machine-config-operator/pkg/servicescm"
@@ -173,6 +175,17 @@ func main() {
 		setupLog.Error(err, "WMCO has an invalid target namespace. "+
 			"OperatorGroup target namespace must be a single, non-cluster-scoped value", "target namespace",
 			watchNamespace)
+		os.Exit(1)
+	}
+
+	// Get and parse the worker ignition spec. Done once on operator start.
+	directClient, err := client.New(mgr.GetConfig(), client.Options{Scheme: mgr.GetScheme()})
+	if err != nil {
+		setupLog.Error(err, "error setting up direct client")
+		os.Exit(1)
+	}
+	if err = ignition.New(directClient, clusterConfig.Network().GetServiceCIDR()); err != nil {
+		setupLog.Error(err, "error getting ignition contents")
 		os.Exit(1)
 	}
 

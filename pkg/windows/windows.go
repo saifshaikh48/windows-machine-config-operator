@@ -15,6 +15,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 	ctrl "sigs.k8s.io/controller-runtime"
 
+	"github.com/openshift/windows-machine-config-operator/pkg/ignition"
 	"github.com/openshift/windows-machine-config-operator/pkg/instance"
 	"github.com/openshift/windows-machine-config-operator/pkg/nodeconfig/payload"
 	"github.com/openshift/windows-machine-config-operator/pkg/retry"
@@ -65,6 +66,9 @@ const (
 	NetworkConfScriptPath = remoteDir + "network-conf.ps1"
 	// azureCloudNodeManagerPath is the location of the azure-cloud-node-manager.exe
 	azureCloudNodeManagerPath = K8sDir + payload.AzureCloudNodeManager
+	// podManifestDirectory is the directory needed by kubelet for the static pods
+	// We shouldn't override if the pod manifest directory already exists
+	podManifestDirectory = K8sDir + "etc\\kubernetes\\manifests"
 	// BootstrapKubeconfig is the location of the bootstrap kubeconfig
 	BootstrapKubeconfig = K8sDir + "bootstrap-kubeconfig"
 	// KubeletPath is the location of the kubelet exe
@@ -140,7 +144,9 @@ var (
 		wicdLogDir,
 		HybridOverlayLogDir,
 		ContainerdDir,
-		ContainerdLogDir}
+		ContainerdLogDir,
+		podManifestDirectory,
+	}
 )
 
 // getFilesToTransfer returns the properly populated filesToTransfer map
@@ -166,6 +172,11 @@ func getFilesToTransfer() (map[*payload.FileInfo]string, error) {
 		payload.ContainerdConfPath:         ContainerdDir,
 		payload.NetworkConfigurationScript: remoteDir,
 	}
+	// transfer bootstrap files from ignition to the VM, required to start the kubelet
+	for _, file := range ignition.RenderedWorker.BootstrapFiles {
+		srcDestPairs[file] = K8sDir
+	}
+
 	files := make(map[*payload.FileInfo]string)
 	for src, dest := range srcDestPairs {
 		f, err := payload.NewFileInfo(src)
