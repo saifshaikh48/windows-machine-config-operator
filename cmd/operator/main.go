@@ -115,8 +115,6 @@ func main() {
 		payload.HybridOverlayPath,
 		payload.KubeletPath,
 		payload.KubeProxyPath,
-		payload.IgnoreWgetPowerShellPath,
-		payload.WmcbPath,
 		payload.WICDPath,
 		payload.HNSPSModule,
 		payload.WindowsExporterPath,

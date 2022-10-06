@@ -40,7 +40,7 @@ const (
 	HybridOverlaySubnet = "k8s.ovn.org/hybrid-overlay-node-subnet"
 	// HybridOverlayMac is an annotation applied by the hybrid-overlay
 	HybridOverlayMac = "k8s.ovn.org/hybrid-overlay-distributed-router-gateway-mac"
-	// WindowsOSLabel is the label that is applied by WMCB to identify the Windows nodes bootstrapped via WMCB
+	// WindowsOSLabel is the label applied when kubelet is ran to identify Windows nodes that have been bootstrapped
 	WindowsOSLabel = "node.openshift.io/os_id=Windows"
 	// WorkerLabel is the label that needs to be applied to the Windows node to make it worker node
 	WorkerLabel = "node-role.kubernetes.io/worker"
@@ -127,20 +127,6 @@ func NewNodeConfig(c client.Client, clientset *kubernetes.Clientset, clusterServ
 	additionalAnnotations map[string]string, platformType configv1.PlatformType) (*nodeConfig, error) {
 	var err error
 
-	if nodeConfigCache.workerIgnitionEndPoint == "" {
-		var kubeAPIServerEndpoint string
-		// We couldn't find it in cache. Let's compute it now.
-		kubeAPIServerEndpoint, err = discoverKubeAPIServerEndpoint()
-		if err != nil {
-			return nil, errors.Wrap(err, "unable to find kube api server endpoint")
-		}
-		clusterAddress, err := getClusterAddr(kubeAPIServerEndpoint)
-		if err != nil {
-			return nil, errors.Wrap(err, "error getting cluster address")
-		}
-		workerIgnitionEndpoint := "https://" + clusterAddress + ":22623/config/worker"
-		nodeConfigCache.workerIgnitionEndPoint = workerIgnitionEndpoint
-	}
 	if err = cluster.ValidateCIDR(clusterServiceCIDR); err != nil {
 		return nil, errors.Wrap(err, "error receiving valid CIDR value for "+
 			"creating new node config")
@@ -157,8 +143,7 @@ func NewNodeConfig(c client.Client, clientset *kubernetes.Clientset, clusterServ
 	if err != nil {
 		return nil, err
 	}
-	win, err := windows.New(nodeConfigCache.workerIgnitionEndPoint, clusterDNS, vxlanPort,
-		instanceInfo, signer, string(platformType), ign.BootstrapFiles)
+	win, err := windows.New(clusterDNS, vxlanPort, instanceInfo, signer, string(platformType), ign.BootstrapFiles)
 	if err != nil {
 		return nil, errors.Wrap(err, "error instantiating Windows instance from VM")
 	}
