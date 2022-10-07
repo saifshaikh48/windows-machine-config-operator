@@ -217,6 +217,8 @@ type Windows interface {
 	Reinitialize() error
 	// Configure prepares the Windows VM for the bootstrapper and then runs it
 	Configure() error
+	// RunBootstrap runs the Windows Instance Config Daemon bootstrap command
+	RunBootstrap(string, string, []byte, []byte) error
 	// ConfigureWICD ensures that the Windows Instance Config Daemon is running on the node
 	ConfigureWICD(string, []byte, []byte) error
 	// ConfigureKubeProxy ensures that the kube-proxy service is running
@@ -481,7 +483,7 @@ func (vm *windows) Configure() error {
 		return errors.Wrapf(err, "error configuring containerd")
 	}
 
-	return vm.runBootstrapper()
+	return nil
 }
 
 // configureContainerd configures the Windows defender exclusion and starts the
@@ -537,6 +539,28 @@ func (vm *windows) ConfigureWICD(apiServerURL string, serviceAccountCA, serviceA
 		return errors.Wrapf(err, "error ensuring %s Windows service has started running", wicdServiceName)
 	}
 	vm.log.Info("configured", "service", wicdServiceName, "args", wicdServiceArgs)
+	return nil
+}
+
+// RunBootstrap runs the Windows Instance Config Daemon bootstrap command
+func (vm *windows) RunBootstrap(desiredVer, apiServerURL string, serviceAccountCA, serviceAccountToken []byte) error {
+	saCAFile := "sa-ca.crt"
+	saTokenFile := "sa-token"
+	err := vm.EnsureFileContent(serviceAccountCA, saCAFile, K8sDir)
+	if err != nil {
+		return err
+	}
+	err = vm.EnsureFileContent(serviceAccountToken, saTokenFile, K8sDir)
+	if err != nil {
+		return err
+	}
+	wicdPath := K8sDir + "windows-instance-config-daemon.exe"
+	wicdServiceArgs := fmt.Sprintf("bootstrap --desired-version %s --api-server %s --sa-ca %s%s --sa-token %s%s",
+		desiredVer, apiServerURL, K8sDir, saCAFile, K8sDir, saTokenFile)
+	if _, err = vm.Run(wicdPath+wicdServiceArgs, true); err != nil {
+		return err
+	}
+	vm.log.Info("ran WICD bootstrap", "path", wicdPath, "args", wicdServiceArgs)
 	return nil
 }
 

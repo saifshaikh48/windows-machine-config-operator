@@ -81,12 +81,12 @@ func New(c client.Client, clusterServiceCIDR string) (*Ignition, error) {
 	}
 	log.V(1).Info("parsed", "machineconfig", renderedWorker.Name, "ignition version", configuration.Ignition.Version)
 
-	ign.BootstrapFiles, err = setupBootstrapFiles(ign, clusterServiceCIDR)
+	ign.BootstrapFiles, err = createBootstrapFiles(ign, clusterServiceCIDR)
 	return ign, err
 }
 
-// setupBootstrapFiles creates all prerequisite files required to start kubelet and returns their paths
-func setupBootstrapFiles(ign *Ignition, clusterServiceCIDR string) ([]string, error) {
+// createBootstrapFiles creates all prerequisite files required to start kubelet and returns their paths
+func createBootstrapFiles(ign *Ignition, clusterServiceCIDR string) ([]string, error) {
 	log := ctrl.Log.WithName("setupBootstrapFiles")
 	log.Info("in setupBootstrapFiles")
 	bootstrapFiles, err := createFilesFromIgnition(ign)
@@ -109,7 +109,7 @@ func setupBootstrapFiles(ign *Ignition, clusterServiceCIDR string) ([]string, er
 	return bootstrapFiles, nil
 }
 
-// createFilesFromIgnition creates files any it can from ignition: bootstrap kubeconfig, cloud-config, kubelet cert
+// createFilesFromIgnition creates any files it can from ignition: bootstrap kubeconfig, cloud-config, kubelet cert
 func createFilesFromIgnition(ign *Ignition) ([]string, error) {
 	// For each new file in the ignition file check if is a file we are interested in, if so, decode it
 	// and write the contents to a temporary destination path

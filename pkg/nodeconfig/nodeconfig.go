@@ -199,8 +199,8 @@ func (nc *nodeConfig) Configure() error {
 		}
 	}
 
-	// Perform the basic kubelet configuration using WMCB
-	if err := nc.Windows.Configure(); err != nil {
+	// Perform the basic kubelet configuration using WICD
+	if err := nc.bootstrap(); err != nil {
 		return errors.Wrap(err, "configuring the Windows VM failed")
 	}
 
@@ -473,6 +473,37 @@ func (nc *nodeConfig) UpdateKubeletClientCA(contents []byte) error {
 		return err
 	}
 	return nil
+}
+
+//
+func (nc *nodeConfig) bootstrap() error {
+	if err := nc.Windows.Configure(); err != nil {
+		return err
+	}
+	tokenSecretPrefix := "windows-instance-config-daemon-token-"
+	secrets, err := nc.k8sclientset.CoreV1().Secrets("openshift-windows-machine-config-operator").
+		List(context.TODO(), meta.ListOptions{})
+	if err != nil {
+		return errors.Wrap(err, "error listing secrets")
+	}
+	var filteredSecrets []core.Secret
+	for _, secret := range secrets.Items {
+		if strings.HasPrefix(secret.Name, tokenSecretPrefix) {
+			filteredSecrets = append(filteredSecrets, secret)
+		}
+	}
+	if len(filteredSecrets) != 1 {
+		return fmt.Errorf("expected 1 secret with '%s' prefix, found %d", tokenSecretPrefix, len(filteredSecrets))
+	}
+	saCA := filteredSecrets[0].Data["ca.crt"]
+	if len(saCA) == 0 {
+		return errors.New("ServiceAccount ca.crt value empty")
+	}
+	saToken := filteredSecrets[0].Data["token"]
+	if len(saToken) == 0 {
+		return errors.New("ServiceAccount token value empty")
+	}
+	return nc.Windows.RunBootstrap(version.Get(), nodeConfigCache.apiServerEndpoint, saCA, saToken)
 }
 
 // configureWICD configures and ensures WICD is running
