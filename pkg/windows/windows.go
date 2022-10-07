@@ -65,6 +65,9 @@ const (
 	NetworkConfScriptPath = remoteDir + "network-conf.ps1"
 	// azureCloudNodeManagerPath is the location of the azure-cloud-node-manager.exe
 	azureCloudNodeManagerPath = K8sDir + payload.AzureCloudNodeManager
+	// podManifestDirectory is the directory needed by kubelet for the static pods
+	// We shouldn't override if the pod manifest directory already exists
+	podManifestDirectory = K8sDir + "etc\\kubernetes\\manifests"
 	// BootstrapKubeconfig is the location of the bootstrap kubeconfig
 	BootstrapKubeconfig = K8sDir + "bootstrap-kubeconfig"
 	// KubeletPath is the location of the kubelet exe
@@ -140,11 +143,13 @@ var (
 		wicdLogDir,
 		HybridOverlayLogDir,
 		ContainerdDir,
-		ContainerdLogDir}
+		ContainerdLogDir,
+		podManifestDirectory,
+	}
 )
 
 // getFilesToTransfer returns the properly populated filesToTransfer map
-func getFilesToTransfer() (map[*payload.FileInfo]string, error) {
+func (vm *windows) getFilesToTransfer() (map[*payload.FileInfo]string, error) {
 	if filesToTransfer != nil {
 		return filesToTransfer, nil
 	}
@@ -166,6 +171,11 @@ func getFilesToTransfer() (map[*payload.FileInfo]string, error) {
 		payload.ContainerdConfPath:         ContainerdDir,
 		payload.NetworkConfigurationScript: remoteDir,
 	}
+	// transfer bootstrap files from ignition to the VM, required to start the kubelet
+	for _, file := range vm.bootstrapFiles {
+		srcDestPairs[file] = K8sDir
+	}
+
 	files := make(map[*payload.FileInfo]string)
 	for src, dest := range srcDestPairs {
 		f, err := payload.NewFileInfo(src)
@@ -240,11 +250,13 @@ type windows struct {
 	defaultShellPowerShell bool
 	// platformType overrides default hostname in bootstrapper
 	platformType string
+	// bootstrapFiles contains the files to be transferred to the VM, required to start the kubelet
+	bootstrapFiles []string
 }
 
 // New returns a new Windows instance constructed from the given WindowsVM
 func New(workerIgnitionEndpoint, clusterDNS, vxlanPort string, instanceInfo *instance.Info, signer ssh.Signer,
-	platformType string) (Windows, error) {
+	platformType string, bootstrapFiles []string) (Windows, error) {
 	log := ctrl.Log.WithName(fmt.Sprintf("wc %s", instanceInfo.Address))
 	log.V(1).Info("initializing SSH connection")
 	conn, err := newSshConnectivity(instanceInfo.Username, instanceInfo.Address, signer, log)
@@ -261,6 +273,7 @@ func New(workerIgnitionEndpoint, clusterDNS, vxlanPort string, instanceInfo *ins
 			log:                    log,
 			defaultShellPowerShell: defaultShellPowershell(conn),
 			platformType:           platformType,
+			bootstrapFiles:         bootstrapFiles,
 		},
 		nil
 }
@@ -642,7 +655,7 @@ func (vm *windows) removeDirectories() error {
 // transferFiles copies various files required for configuring the Windows node, to the VM.
 func (vm *windows) transferFiles() error {
 	vm.log.Info("transferring files")
-	filesToTransfer, err := getFilesToTransfer()
+	filesToTransfer, err := vm.getFilesToTransfer()
 	if err != nil {
 		return errors.Wrapf(err, "error getting list of files to transfer")
 	}

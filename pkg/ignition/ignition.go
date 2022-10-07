@@ -2,21 +2,31 @@ package ignition
 
 import (
 	"context"
+	_ "embed"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
+	"text/template"
 
 	ignCfg "github.com/coreos/ignition/v2/config/v3_2"
 	ignCfgTypes "github.com/coreos/ignition/v2/config/v3_2/types"
 	mcfg "github.com/openshift/machine-config-operator/pkg/apis/machineconfiguration.openshift.io/v1"
 	"github.com/pkg/errors"
+	"github.com/vincent-petithory/dataurl"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	"github.com/openshift/windows-machine-config-operator/pkg/cluster"
+	"github.com/openshift/windows-machine-config-operator/pkg/nodeconfig/payload"
 )
 
 //+kubebuilder:rbac:groups="machineconfiguration.openshift.io",resources=machineconfigs,verbs=list
 
 const (
+	// k8sDir is the remote kubernetes executable directory
+	k8sDir = "C:\\k\\"
 	// kubeletSystemdName is the name of the systemd service that the kubelet runs under,
 	// this is used to parse the kubelet args
 	kubeletSystemdName = "kubelet.service"
@@ -29,13 +39,28 @@ const (
 	RenderedWorkerPrefix = "rendered-worker-"
 )
 
+var (
+	//go:embed templates/kubelet_config.json
+	baseConfig string
+)
+
 // Ignition is a representation of an Ignition file
 type Ignition struct {
 	config ignCfgTypes.Config
+	// BootstrapFiles holds paths to all the files required to start the kubelet service
+	BootstrapFiles []string
+}
+
+// kubeletConf holds the values to populate needed fields in the the base kubelet config file
+type kubeletConf struct {
+	// ClientCAFile specifies location to client certificate
+	ClientCAFile string
+	// ClusterDNS is the IP address of the DNS server used for all containers
+	ClusterDNS string
 }
 
 // New returns a new instance of Ignition
-func New(c client.Client) (*Ignition, error) {
+func New(c client.Client, clusterServiceCIDR string) (*Ignition, error) {
 	log := ctrl.Log.WithName("ignition")
 	machineConfigs := &mcfg.MachineConfigList{}
 	err := c.List(context.TODO(), machineConfigs)
@@ -54,9 +79,118 @@ func New(c client.Client) (*Ignition, error) {
 	ign := &Ignition{
 		config: configuration,
 	}
-	log.V(1).Info("parsed", "machineconfig", renderedWorker.GetName(), "ignition version",
-		configuration.Ignition.Version)
-	return ign, nil
+	log.V(1).Info("parsed", "machineconfig", renderedWorker.Name, "ignition version", configuration.Ignition.Version)
+
+	ign.BootstrapFiles, err = setupBootstrapFiles(ign, clusterServiceCIDR)
+	return ign, err
+}
+
+// setupBootstrapFiles creates all prerequisite files required to start kubelet and returns their paths
+func setupBootstrapFiles(ign *Ignition, clusterServiceCIDR string) ([]string, error) {
+	log := ctrl.Log.WithName("setupBootstrapFiles")
+	log.Info("in setupBootstrapFiles")
+	bootstrapFiles, err := createFilesFromIgnition(ign)
+	if err != nil {
+		return nil, err
+	}
+	log.Info("executed GetFilesFromIgnition", "files", bootstrapFiles)
+
+	clusterDNS, err := cluster.GetDNS(clusterServiceCIDR)
+	if err != nil {
+		return nil, err
+	}
+	initKubeletConfigPath, err := createKubeletConf(clusterDNS)
+	if err != nil {
+		return nil, err
+	}
+	log.Info("created kubelet.conf", "path", initKubeletConfigPath)
+	bootstrapFiles = append(bootstrapFiles, initKubeletConfigPath)
+	log.Info("added bootstrap files", "files to transfer", bootstrapFiles)
+	return bootstrapFiles, nil
+}
+
+// createFilesFromIgnition creates files any it can from ignition: bootstrap kubeconfig, cloud-config, kubelet cert
+func createFilesFromIgnition(ign *Ignition) ([]string, error) {
+	// For each new file in the ignition file check if is a file we are interested in, if so, decode it
+	// and write the contents to a temporary destination path
+	filesToTranslate := map[string]struct{}{
+		payload.BootstrapKubeconfigPath: {},
+		payload.KubeletCACertPath:       {},
+	}
+
+	kubeletArgs, err := ign.GetKubeletArgs()
+	if err != nil {
+		return nil, err
+	}
+	if _, ok := kubeletArgs[CloudConfigOption]; ok {
+		filesToTranslate[payload.CloudConfigPath] = struct{}{}
+	}
+
+	if _, err := os.Stat(payload.GeneratedDir); errors.Is(err, os.ErrNotExist) {
+		err := os.Mkdir(payload.GeneratedDir, os.ModePerm)
+		if err != nil {
+			return nil, err
+		}
+	}
+	filesFromIgnition := []string{}
+	for _, ignFile := range ign.config.Storage.Files {
+		if _, ok := filesToTranslate[ignFile.Node.Path]; ok {
+			if ignFile.Contents.Source == nil {
+				return nil, errors.Errorf("could not process %s: File is empty", ignFile.Node.Path)
+			}
+			contents, err := dataurl.DecodeString(*ignFile.Contents.Source)
+			if err != nil {
+				return nil, errors.Wrapf(err, "could not decode %s", ignFile.Node.Path)
+			}
+			newContents := contents.Data
+			dest := filepath.Join(payload.GeneratedDir, filepath.Base(ignFile.Node.Path))
+			if err = os.WriteFile(dest, newContents, 0644); err != nil {
+				return nil, fmt.Errorf("could not write to %s: %s", dest, err)
+			}
+			filesFromIgnition = append(filesFromIgnition, dest)
+		}
+	}
+	return filesFromIgnition, nil
+}
+
+// createKubeletConf creates config file for kubelet, with Windows specific configuration
+// Add values in kubelet_config.json files, for additional static fields.
+// Add fields in kubeletConf struct for variable fields
+func createKubeletConf(clusterDNS string) (string, error) {
+	log := ctrl.Log.WithName("createKubeletConf")
+	kubeletConfTmpl := template.New("kubeletconf")
+	// Parse the template
+	kubeletConfTmpl, err := kubeletConfTmpl.Parse(baseConfig)
+	if err != nil {
+		return "", err
+	}
+	// Fill up the config file, using kubeletConf struct
+	variableFields := kubeletConf{
+		ClientCAFile: strings.Join(append(strings.Split(k8sDir, `\`), `kubelet-ca.crt`), `\\`),
+	}
+	// check clusterDNS
+	if clusterDNS != "" {
+		// surround with double-quotes for valid JSON format
+		variableFields.ClusterDNS = "\"" + clusterDNS + "\""
+	}
+	// Create kubelet.conf file
+	if _, err := os.Stat(payload.GeneratedDir); errors.Is(err, os.ErrNotExist) {
+		err := os.Mkdir(payload.GeneratedDir, os.ModePerm)
+		if err != nil {
+			return "", err
+		}
+	}
+	kubeletConfFile, err := os.Create(payload.KubeletConfigPath)
+	defer kubeletConfFile.Close()
+	if err != nil {
+		return "", fmt.Errorf("error creating %s: %v", payload.KubeletConfigPath, err)
+	}
+	log.Info("created", "file", payload.KubeletConfigPath)
+	err = kubeletConfTmpl.Execute(kubeletConfFile, variableFields)
+	if err != nil {
+		return "", fmt.Errorf("error writing data to %v file: %v", payload.KubeletConfigPath, err)
+	}
+	return kubeletConfFile.Name(), nil
 }
 
 // GetKubeletArgs returns a set of arguments for kubelet.exe, as specified in the ignition file

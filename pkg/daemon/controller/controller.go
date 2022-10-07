@@ -436,8 +436,7 @@ func (sc *ServiceController) resolvePowershellVariables(svc servicescm.Service) 
 // It also returns the config and scheme used to created the client.
 func NewDirectClient(cfg *rest.Config) (client.Client, error) {
 	clientScheme := runtime.NewScheme()
-	err := clientgoscheme.AddToScheme(clientScheme)
-	if err = clientgoscheme.AddToScheme(clientScheme); err != nil {
+	if err := clientgoscheme.AddToScheme(clientScheme); err != nil {
 		return nil, err
 	}
 

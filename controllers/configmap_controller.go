@@ -92,7 +92,7 @@ func NewConfigMapReconciler(mgr manager.Manager, clusterConfig cluster.Config, w
 	if err != nil {
 		return nil, err
 	}
-	ign, err := ignition.New(directClient)
+	ign, err := ignition.New(directClient, clusterConfig.Network().GetServiceCIDR())
 	if err != nil {
 		return nil, errors.Wrap(err, "error creating ignition object")
 	}

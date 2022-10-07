@@ -48,8 +48,10 @@ const (
 	// WinOverlayCNIPlugin is the path of the win-overlay CNI Plugin binary. The container image should already have
 	// this binary mounted
 	WinOverlayCNIPlugin = payloadDirectory + cniDirectory + "win-overlay.exe"
+	// GeneratedDir is the directory in which bootstrap files needed to start kubelet are stored
+	GeneratedDir = payloadDirectory + "/generated/"
 	// NetworkConfigurationScript is the path for generated Network configuration Script
-	NetworkConfigurationScript = payloadDirectory + "/generated/network-conf.ps1"
+	NetworkConfigurationScript = GeneratedDir + "network-conf.ps1"
 	// HybridOverlayName is the name of the hybrid overlay executable
 	HybridOverlayName = "hybrid-overlay-node.exe"
 	// HybridOverlayPath contains the path of the hybrid overlay binary. The container image should already have this
@@ -65,6 +67,14 @@ const (
 	// AzureCloudNodeManagerPath contains the path of the azure cloud node manager binary. The container image should
 	// already have this binary mounted
 	AzureCloudNodeManagerPath = payloadDirectory + AzureCloudNodeManager
+	// KubeletConfigPath is the directory in which bootstrap files needed to start kubelet are stored
+	KubeletConfigPath = GeneratedDir + "kubelet.conf"
+	// BootstrapKubeconfig is the path to the bootstrap kubeconfig
+	BootstrapKubeconfigPath = "/etc/kubernetes/kubeconfig"
+	// KubeletCACert is the path to the kubelet's CA certificate
+	KubeletCACertPath = "/etc/kubernetes/kubelet-ca.crt"
+	// CloudConfigPath is the path to the cloud config file as defined in ignition
+	CloudConfigPath = "/etc/kubernetes/cloud.conf"
 	// TODO: This script is doing both CNI configuration and HNS endpoint creation, two things that aren't necessarily
 	//       related. Correct that in: https://issues.redhat.com/browse/WINC-882
 	// networkConfTemplate is the template used to generate the network configuration script
