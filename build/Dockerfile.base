@@ -60,6 +60,7 @@ RUN ./build_windows.sh
 FROM registry.access.redhat.com/ubi8/ubi-minimal:latest
 LABEL stage=base
 
+WORKDIR /payload/
 # Copy hybrid-overlay-node.exe
 COPY --from=build /build/windows-machine-config-operator/ovn-kubernetes/go-controller/_output/go/bin/windows/hybrid-overlay-node.exe .
 

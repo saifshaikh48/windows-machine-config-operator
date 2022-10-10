@@ -22,7 +22,7 @@ import (
 	"github.com/openshift/windows-machine-config-operator/pkg/nodeconfig/payload"
 )
 
-//+kubebuilder:rbac:groups="machineconfiguration.openshift.io",resources=machineconfigs,verbs=list
+//+kubebuilder:rbac:groups="machineconfiguration.openshift.io",resources=machineconfigs,verbs=list;watch
 
 const (
 	// k8sDir is the remote kubernetes executable directory
