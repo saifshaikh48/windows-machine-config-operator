@@ -8,12 +8,12 @@ import (
 // information when we don't want to get the information from the global context coming from reconciler
 // but to have something at nodeConfig package locally which will be passed onto other structs.
 type cache struct {
-	// apiServerEndpoint is the address which clients can interact with the API server through
-	apiServerEndpoint string
+	// ApiServerEndpoint is the address which clients can interact with the API server through
+	ApiServerEndpoint string
 }
 
 // cache has the information related to nodeConfig that should not be changed.
-var nodeConfigCache = cache{}
+var NodeConfigCache = cache{}
 
 // init populates the cache that we need for nodeConfig
 func init() {
@@ -26,5 +26,5 @@ func init() {
 		return
 	}
 	// populate the cache
-	nodeConfigCache.apiServerEndpoint = kubeAPIServerEndpoint
+	NodeConfigCache.ApiServerEndpoint = kubeAPIServerEndpoint
 }

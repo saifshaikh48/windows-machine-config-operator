@@ -3,6 +3,7 @@ package ignition
 import (
 	"context"
 	_ "embed"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -15,6 +16,9 @@ import (
 	mcfg "github.com/openshift/machine-config-operator/pkg/apis/machineconfiguration.openshift.io/v1"
 	"github.com/pkg/errors"
 	"github.com/vincent-petithory/dataurl"
+	corev1 "k8s.io/api/core/v1"
+	kubeTypes "k8s.io/apimachinery/pkg/types"
+	clientcmdv1 "k8s.io/client-go/tools/clientcmd/api/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -60,7 +64,7 @@ type kubeletConf struct {
 }
 
 // New returns a new instance of Ignition
-func New(c client.Client, clusterServiceCIDR string) (*Ignition, error) {
+func New(c client.Client, apiServerURL, clusterServiceCIDR string) (*Ignition, error) {
 	log := ctrl.Log.WithName("ignition")
 	machineConfigs := &mcfg.MachineConfigList{}
 	err := c.List(context.TODO(), machineConfigs)
@@ -81,12 +85,12 @@ func New(c client.Client, clusterServiceCIDR string) (*Ignition, error) {
 	}
 	log.V(1).Info("parsed", "machineconfig", renderedWorker.Name, "ignition version", configuration.Ignition.Version)
 
-	ign.BootstrapFiles, err = createBootstrapFiles(ign, clusterServiceCIDR)
+	ign.BootstrapFiles, err = createBootstrapFiles(c, ign, apiServerURL, clusterServiceCIDR)
 	return ign, err
 }
 
 // createBootstrapFiles creates all prerequisite files required to start kubelet and returns their paths
-func createBootstrapFiles(ign *Ignition, clusterServiceCIDR string) ([]string, error) {
+func createBootstrapFiles(c client.Client, ign *Ignition, apiServerURL, clusterServiceCIDR string) ([]string, error) {
 	log := ctrl.Log.WithName("setupBootstrapFiles")
 	log.Info("in setupBootstrapFiles")
 	bootstrapFiles, err := createFilesFromIgnition(ign)
@@ -94,6 +98,13 @@ func createBootstrapFiles(ign *Ignition, clusterServiceCIDR string) ([]string, e
 		return nil, err
 	}
 	log.Info("executed GetFilesFromIgnition", "files", bootstrapFiles)
+
+	bootstrapKubeconfigPath, err := createBootstrapKubeconfig(c, apiServerURL)
+	if err != nil {
+		return nil, err
+	}
+	log.Info("created bootstrap kubeconfig", "path", bootstrapKubeconfigPath)
+	bootstrapFiles = append(bootstrapFiles, bootstrapKubeconfigPath)
 
 	clusterDNS, err := cluster.GetDNS(clusterServiceCIDR)
 	if err != nil {
@@ -109,8 +120,83 @@ func createBootstrapFiles(ign *Ignition, clusterServiceCIDR string) ([]string, e
 	return bootstrapFiles, nil
 }
 
+// createBootstrapKubeconfig creates a kubeconfig with the certificate and token files in the payload
+func createBootstrapKubeconfig(c client.Client, apiServerURL string) (string, error) {
+	log := ctrl.Log.WithName("createBootstrapKubeconfig")
+	// pull down secret openshift-machine-config-operator/node-bootstrapper-token
+	nodeBootstrapToken := &corev1.Secret{}
+	err := c.Get(context.TODO(), kubeTypes.NamespacedName{Name: "node-bootstrapper-token",
+		Namespace: "openshift-machine-config-operator"}, nodeBootstrapToken)
+	if err != nil {
+		return "", err
+	}
+
+	// extract ca.crt and token data fields
+	caCert := nodeBootstrapToken.Data[corev1.ServiceAccountRootCAKey]
+	if caCert == nil {
+		return "", errors.New("unable to find CA cert")
+	}
+	token := nodeBootstrapToken.Data[corev1.ServiceAccountTokenKey]
+	if token == nil {
+		return "", errors.New("unable to find token")
+	}
+
+	// create kubeconfig object and marshal to string
+	kubeconfig := clientcmdv1.Config{
+		Clusters: []clientcmdv1.NamedCluster{{
+			Name: "local",
+			Cluster: clientcmdv1.Cluster{
+				Server:                   apiServerURL,
+				CertificateAuthorityData: caCert,
+			}},
+		},
+		AuthInfos: []clientcmdv1.NamedAuthInfo{{
+			Name: "kubelet",
+			AuthInfo: clientcmdv1.AuthInfo{
+				Token: string(token),
+			},
+		}},
+		Contexts: []clientcmdv1.NamedContext{{
+			Name: "kubelet",
+			Context: clientcmdv1.Context{
+				Cluster:  "local",
+				AuthInfo: "kubelet",
+			},
+		}},
+		CurrentContext: "kubelet",
+	}
+
+	kcData, err := json.Marshal(kubeconfig)
+	if err != nil {
+		return "", err
+	}
+
+	// write to file in payload generated folder
+	if _, err := os.Stat(payload.GeneratedDir); errors.Is(err, os.ErrNotExist) {
+		err := os.Mkdir(payload.GeneratedDir, os.ModePerm)
+		if err != nil {
+			return "", err
+		}
+	}
+
+	dest := filepath.Join(payload.GeneratedDir, "bootstrap-kubeconfig")
+	kubeletConfFile, err := os.Create(dest)
+	defer kubeletConfFile.Close()
+	if err != nil {
+		return "", fmt.Errorf("error creating %s: %v", dest, err)
+	}
+	if err = os.WriteFile(dest, kcData, 0644); err != nil {
+		return "", fmt.Errorf("could not write to %s: %s", dest, err)
+	}
+
+	// return file path
+	log.Info("created", "file", dest)
+	return dest, nil
+}
+
 // createFilesFromIgnition creates any files it can from ignition: bootstrap kubeconfig, cloud-config, kubelet cert
 func createFilesFromIgnition(ign *Ignition) ([]string, error) {
+	log := ctrl.Log.WithName("createFilesFromIgnition")
 	// For each new file in the ignition file check if is a file we are interested in, if so, decode it
 	// and write the contents to a temporary destination path
 	filesToTranslate := map[string]struct{}{
@@ -148,6 +234,7 @@ func createFilesFromIgnition(ign *Ignition) ([]string, error) {
 				return nil, fmt.Errorf("could not write to %s: %s", dest, err)
 			}
 			filesFromIgnition = append(filesFromIgnition, dest)
+			log.Info("created", "file", dest)
 		}
 	}
 	return filesFromIgnition, nil

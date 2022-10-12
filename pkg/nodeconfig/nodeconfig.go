@@ -139,7 +139,7 @@ func NewNodeConfig(c client.Client, clientset *kubernetes.Clientset, clusterServ
 
 	log := ctrl.Log.WithName(fmt.Sprintf("nc %s", instanceInfo.Address))
 
-	ign, err := ignition.New(c, clusterServiceCIDR)
+	ign, err := ignition.New(c, NodeConfigCache.ApiServerEndpoint, clusterServiceCIDR)
 	if err != nil {
 		return nil, err
 	}
@@ -488,7 +488,7 @@ func (nc *nodeConfig) bootstrap() error {
 	if len(saToken) == 0 {
 		return errors.New("ServiceAccount token value empty")
 	}
-	return nc.Windows.RunBootstrap(version.Get(), nodeConfigCache.apiServerEndpoint, saCA, saToken)
+	return nc.Windows.RunBootstrap(version.Get(), NodeConfigCache.ApiServerEndpoint, saCA, saToken)
 }
 
 // configureWICD configures and ensures WICD is running
@@ -516,7 +516,7 @@ func (nc *nodeConfig) configureWICD() error {
 	if len(saToken) == 0 {
 		return errors.New("ServiceAccount token value empty")
 	}
-	return nc.Windows.ConfigureWICD(nodeConfigCache.apiServerEndpoint, saCA, saToken)
+	return nc.Windows.ConfigureWICD(NodeConfigCache.ApiServerEndpoint, saCA, saToken)
 }
 
 // CreatePubKeyHashAnnotation returns a formatted string which can be used for a public key annotation on a node.

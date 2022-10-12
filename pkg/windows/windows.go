@@ -547,12 +547,12 @@ func (vm *windows) RunBootstrap(desiredVer, apiServerURL string, serviceAccountC
 		return err
 	}
 	wicdPath := K8sDir + "windows-instance-config-daemon.exe"
-	wicdServiceArgs := fmt.Sprintf("bootstrap --desired-version %s --api-server %s --sa-ca %s%s --sa-token %s%s",
-		desiredVer, apiServerURL, K8sDir, saCAFile, K8sDir, saTokenFile)
-	if _, err = vm.Run(wicdPath+wicdServiceArgs, true); err != nil {
+	wicdBootstrapCmd := fmt.Sprintf("%s bootstrap --desired-version %s --api-server %s --sa-ca %s%s --sa-token %s%s",
+		wicdPath, desiredVer, apiServerURL, K8sDir, saCAFile, K8sDir, saTokenFile)
+	if _, err = vm.Run(wicdBootstrapCmd, true); err != nil {
 		return err
 	}
-	vm.log.Info("ran WICD bootstrap", "path", wicdPath, "args", wicdServiceArgs)
+	vm.log.Info("ran WICD bootstrap", "cmd", wicdBootstrapCmd)
 	return nil
 }
 
