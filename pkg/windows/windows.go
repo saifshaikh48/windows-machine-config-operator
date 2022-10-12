@@ -137,6 +137,7 @@ var (
 		cniDir,
 		CniConfDir,
 		logDir,
+		KubeletLogDir,
 		KubeProxyLogDir,
 		wicdLogDir,
 		HybridOverlayLogDir,
