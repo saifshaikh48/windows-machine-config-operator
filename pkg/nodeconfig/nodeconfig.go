@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
-	"net/url"
 	"path/filepath"
 	"strings"
 	"time"
@@ -45,7 +44,7 @@ const (
 	HybridOverlaySubnet = "k8s.ovn.org/hybrid-overlay-node-subnet"
 	// HybridOverlayMac is an annotation applied by the hybrid-overlay
 	HybridOverlayMac = "k8s.ovn.org/hybrid-overlay-distributed-router-gateway-mac"
-	// WindowsOSLabel is the label that is applied by WMCB to identify the Windows nodes bootstrapped via WMCB
+	// WindowsOSLabel is the label applied when kubelet is ran to identify Windows nodes
 	WindowsOSLabel = "node.openshift.io/os_id=Windows"
 	// WorkerLabel is the label that needs to be applied to the Windows node to make it worker node
 	WorkerLabel = "node-role.kubernetes.io/worker"
@@ -145,20 +144,6 @@ func NewNodeConfig(c client.Client, clientset *kubernetes.Clientset, clusterServ
 	additionalAnnotations map[string]string, platformType configv1.PlatformType) (*nodeConfig, error) {
 	var err error
 
-	if nodeConfigCache.workerIgnitionEndPoint == "" {
-		var kubeAPIServerEndpoint string
-		// We couldn't find it in cache. Let's compute it now.
-		kubeAPIServerEndpoint, err = discoverKubeAPIServerEndpoint()
-		if err != nil {
-			return nil, errors.Wrap(err, "unable to find kube api server endpoint")
-		}
-		clusterAddress, err := getClusterAddr(kubeAPIServerEndpoint)
-		if err != nil {
-			return nil, errors.Wrap(err, "error getting cluster address")
-		}
-		workerIgnitionEndpoint := "https://" + clusterAddress + ":22623/config/worker"
-		nodeConfigCache.workerIgnitionEndPoint = workerIgnitionEndpoint
-	}
 	if err = cluster.ValidateCIDR(clusterServiceCIDR); err != nil {
 		return nil, errors.Wrap(err, "error receiving valid CIDR value for "+
 			"creating new node config")
@@ -170,8 +155,7 @@ func NewNodeConfig(c client.Client, clientset *kubernetes.Clientset, clusterServ
 	}
 
 	log := ctrl.Log.WithName(fmt.Sprintf("nc %s", instanceInfo.Address))
-	win, err := windows.New(nodeConfigCache.workerIgnitionEndPoint, clusterDNS, vxlanPort,
-		instanceInfo, signer, string(platformType))
+	win, err := windows.New(clusterDNS, vxlanPort, instanceInfo, signer)
 	if err != nil {
 		return nil, errors.Wrap(err, "error instantiating Windows instance from VM")
 	}
@@ -179,26 +163,6 @@ func NewNodeConfig(c client.Client, clientset *kubernetes.Clientset, clusterServ
 	return &nodeConfig{client: c, k8sclientset: clientset, Windows: win, platformType: platformType,
 		clusterServiceCIDR: clusterServiceCIDR, publicKeyHash: CreatePubKeyHashAnnotation(signer.PublicKey()),
 		log: log, additionalLabels: additionalLabels, additionalAnnotations: additionalAnnotations}, nil
-}
-
-// getClusterAddr gets the cluster address associated with given kubernetes APIServerEndpoint.
-// For example: https://api-int.abc.devcluster.openshift.com:6443 gets translated to
-// api-int.abc.devcluster.openshift.com
-// TODO: Think if this needs to be removed as this is too restrictive. Imagine apiserver behind
-// a loadbalancer.
-// Jira story: https://issues.redhat.com/browse/WINC-398
-func getClusterAddr(kubeAPIServerEndpoint string) (string, error) {
-	clusterEndPoint, err := url.Parse(kubeAPIServerEndpoint)
-	if err != nil {
-		return "", errors.Wrap(err, "unable to parse the kubernetes API server endpoint")
-	}
-	hostName := clusterEndPoint.Hostname()
-
-	// Check if hostname is valid
-	if !strings.HasPrefix(hostName, "api-int.") {
-		return "", fmt.Errorf("invalid API server url %s: expected hostname to start with `api-int.`", hostName)
-	}
-	return hostName, nil
 }
 
 // Configure configures the Windows VM to make it a Windows worker node
