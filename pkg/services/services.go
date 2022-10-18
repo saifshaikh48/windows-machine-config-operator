@@ -168,6 +168,7 @@ func generateKubeletArgs(argsFromIgnition map[string]string, debug bool) ([]stri
 		"--container-runtime=remote",
 		"--container-runtime-endpoint=" + containerdEndpointValue,
 		"--resolv-conf=",
+		"--enforce-node-allocatable=",
 	}
 
 	kubeletArgs = append(kubeletArgs, klogVerbosityArg(debug))

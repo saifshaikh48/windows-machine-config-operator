@@ -65,6 +65,9 @@ const (
 	NetworkConfScriptPath = remoteDir + "network-conf.ps1"
 	// azureCloudNodeManagerPath is the location of the azure-cloud-node-manager.exe
 	azureCloudNodeManagerPath = K8sDir + payload.AzureCloudNodeManager
+	// podManifestDirectory is the directory needed by kubelet for the static pods
+	// We shouldn't override if the pod manifest directory already exists
+	podManifestDirectory = K8sDir + "etc\\kubernetes\\manifests"
 	// BootstrapKubeconfig is the location of the bootstrap kubeconfig
 	BootstrapKubeconfig = K8sDir + "bootstrap-kubeconfig"
 	// KubeletPath is the location of the kubelet exe
@@ -136,11 +139,14 @@ var (
 		cniDir,
 		CniConfDir,
 		logDir,
+		KubeletLogDir,
 		KubeProxyLogDir,
 		wicdLogDir,
 		HybridOverlayLogDir,
 		ContainerdDir,
-		ContainerdLogDir}
+		ContainerdLogDir,
+		podManifestDirectory,
+	}
 )
 
 // getFilesToTransfer returns the properly populated filesToTransfer map
