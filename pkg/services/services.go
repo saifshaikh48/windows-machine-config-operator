@@ -19,10 +19,9 @@ const (
 	// https://docs.openshift.com/container-platform/latest/rest_api/editing-kubelet-log-level-verbosity.html#log-verbosity-descriptions_editing-kubelet-log-level-verbosity
 	debugLogLevel    = "4"
 	standardLogLevel = "2"
-	// ec2HostnameVar is a variable that should be replaced with the value of `local-hostname` in the ec2 instance
-	// metadata
-	ec2HostnameVar = "EC2_HOSTNAME"
-	NodeIPVar      = "NODE_IP"
+	// hostnameOverrideVarName is a variable that should be replaced with the value of the desired instance hostname
+	hostnameOverrideVarName = "HOSTNAME_OVERRIDE"
+	NodeIPVar               = "NODE_IP"
 )
 
 // GenerateManifest returns the expected state of the Windows service configmap. If debug is true, debug logging
@@ -120,13 +119,10 @@ func getKubeletServiceConfiguration(argsFromIginition map[string]string, debug b
 		return servicescm.Service{}, err
 	}
 	var powershellVars []servicescm.PowershellCmdArg
-	hostnameArg := getKubeletHostnameOverride(platform)
+	hostnameArg, hostnamePowershellVars := getKubeletHostnameOverride(platform)
 	if hostnameArg != "" {
 		kubeletArgs = append(kubeletArgs, hostnameArg)
-		powershellVars = append(powershellVars, servicescm.PowershellCmdArg{
-			Name: ec2HostnameVar,
-			Path: "Get-EC2InstanceMetadata -Category LocalHostname",
-		})
+		powershellVars = append(powershellVars, hostnamePowershellVars)
 	}
 
 	kubeletServiceCmd := windows.KubeletPath
@@ -194,12 +190,57 @@ func klogVerbosityArg(debug bool) string {
 }
 
 // getKubeletHostnameOverride returns the hostname override arg that should be used
-func getKubeletHostnameOverride(platformType string) string {
+func getKubeletHostnameOverride(platformType string) (string, servicescm.PowershellCmdArg) {
 	platformType = strings.ToUpper(platformType)
+	// define argument with fixed variable name
+	hostnameOverrideArg := "--hostname-override=" + hostnameOverrideVarName
 	switch platformType {
 	case string(config.AWSPlatformType):
-		return "--hostname-override=" + ec2HostnameVar
+		return hostnameOverrideArg, getAWSMetadataHostnamePowershellCmdArg(hostnameOverrideVarName)
+	case string(config.GCPPlatformType):
+		return hostnameOverrideArg, getGCPMetadataHostnamePowershellCmdArg(hostnameOverrideVarName)
 	default:
-		return ""
+		return "", servicescm.PowershellCmdArg{}
 	}
+}
+
+// getAWSMetadataHostnamePowershellCmdArg returns the PowershellCmdArg to resolve the hostname using the instance
+// metadata service in AWS. Uses AWS Tools for PowerShell (https://docs.aws.amazon.com/powershell/latest/userguide/pstools-welcome.html)
+func getAWSMetadataHostnamePowershellCmdArg(variableName string) servicescm.PowershellCmdArg {
+	return servicescm.PowershellCmdArg{
+		Name: variableName,
+		Path: "Get-EC2InstanceMetadata -Category LocalHostname",
+	}
+}
+
+// getGCPMetadataHostnamePowershellCmdArg returns the PowershellCmdArg to resolve the hostname using the instance
+// metadata service in GCP. Uses GoogleCloud Tools for PowerShell (https://cloud.google.com/tools/powershell/docs/quickstart)
+// getGCPMetadataHostname returns the GCP instance hostname from the metadata service.  GCP is an especial case,
+// and the resulting hostname is truncated if the length is longer than 63 characters.
+func getGCPMetadataHostnamePowershellCmdArg(variableName string) servicescm.PowershellCmdArg {
+	return servicescm.PowershellCmdArg{
+		Name: variableName,
+		Path: `
+# MAX_LENGTH is the maximum number of character allowed for the instance's hostname in GCP
+$MAX_LENGTH = 63
+
+# get hostname from the instance metadata service
+$hostname=Get-GceMetadata -Path "instance/hostname"
+
+# check hostname length
+if ($hostname.Length -le $MAX_LENGTH) {
+    # up to 63 characters is good, nothing to do!
+    return $hostname
+}
+
+# find the index of first dot in the FQDN
+$firstDotIndex=$hostname.IndexOf(".") 
+if (($firstDotIndex -gt 0) -and ($firstDotIndex -le $MAX_LENGTH) ) {
+    # and return first part of the FQDN
+    return $hostname.Substring(0, $firstDotIndex)
+}
+
+# otherwise, return the first 63 characters of the hostname
+return $hostname.Substring(0, $MAX_LENGTH)
+`}
 }
