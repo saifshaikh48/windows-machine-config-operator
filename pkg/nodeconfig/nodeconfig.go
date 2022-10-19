@@ -85,6 +85,14 @@ type nodeConfig struct {
 	platformType configv1.PlatformType
 }
 
+// authentication holds credential information used to communicate with a kubernetes cluster
+type authentication struct {
+	// caCert is the PEM-encoded certificate authority certificate
+	caCert []byte
+	// token is the bearer token used to grant access to the cluster API server
+	token []byte
+}
+
 // ErrWriter is a wrapper to enable error-level logging inside kubectl drainer implementation
 type ErrWriter struct {
 	log logr.Logger
@@ -207,14 +215,18 @@ func (nc *nodeConfig) Configure() error {
 	if err := nc.createBootstrapFiles(); err != nil {
 		return err
 	}
-
-	// Perform the basic kubelet configuration using WMCB
-	if err := nc.Windows.Configure(); err != nil {
+	wicdKey, err := nc.getWICDCredentials()
+	if err != nil {
+		return err
+	}
+	// Start all required services to bootstrap a node object using WICD
+	err = nc.Windows.Bootstrap(version.Get(), nodeConfigCache.apiServerEndpoint, wicdKey.caCert, wicdKey.token)
+	if err != nil {
 		return errors.Wrap(err, "configuring the Windows VM failed")
 	}
 
 	// Perform rest of the configuration with the kubelet running
-	err := func() error {
+	err = func() error {
 		// populate node object in nodeConfig in the case of a new Windows instance
 		if err := nc.setNode(false); err != nil {
 			return errors.Wrap(err, "error getting node object")
@@ -258,7 +270,7 @@ func (nc *nodeConfig) Configure() error {
 				return errors.Wrapf(err, "error excluding cloud taint on node %s", nc.node.GetName())
 			}
 		}
-		if err := nc.configureWICD(); err != nil {
+		if err := nc.Windows.ConfigureWICD(nodeConfigCache.apiServerEndpoint, wicdKey.caCert, wicdKey.token); err != nil {
 			return errors.Wrap(err, "configuring WICD failed")
 		}
 		// Set the desired version annotation, communicating to WICD which Windows services configmap to use
@@ -663,14 +675,15 @@ func (nc *nodeConfig) UpdateKubeletClientCA(contents []byte) error {
 	return nil
 }
 
-// configureWICD configures and ensures WICD is running
-func (nc *nodeConfig) configureWICD() error {
-	tokenSecretPrefix := "windows-instance-config-daemon-token-"
-	secrets, err := nc.k8sclientset.CoreV1().Secrets("openshift-windows-machine-config-operator").
-		List(context.TODO(), meta.ListOptions{})
-	if err != nil {
-		return errors.Wrap(err, "error listing secrets")
+// getWICDCredentials returns the CA cert and access token associated with the WICD service account
+func (nc *nodeConfig) getWICDCredentials() (*authentication, error) {
+	secrets := &core.SecretList{}
+	if err := nc.client.List(context.TODO(), secrets,
+		&client.ListOptions{Namespace: "openshift-windows-machine-config-operator"}); err != nil {
+		return nil, errors.Wrap(err, "error listing secrets")
 	}
+
+	tokenSecretPrefix := "windows-instance-config-daemon-token-"
 	var filteredSecrets []core.Secret
 	for _, secret := range secrets.Items {
 		if strings.HasPrefix(secret.Name, tokenSecretPrefix) {
@@ -678,17 +691,17 @@ func (nc *nodeConfig) configureWICD() error {
 		}
 	}
 	if len(filteredSecrets) != 1 {
-		return fmt.Errorf("expected 1 secret with '%s' prefix, found %d", tokenSecretPrefix, len(filteredSecrets))
+		return nil, fmt.Errorf("expected 1 secret with '%s' prefix, found %d", tokenSecretPrefix, len(filteredSecrets))
 	}
-	saCA := filteredSecrets[0].Data["ca.crt"]
-	if len(saCA) == 0 {
-		return errors.New("ServiceAccount ca.crt value empty")
+	caCert := filteredSecrets[0].Data["ca.crt"]
+	if len(caCert) == 0 {
+		return nil, errors.New("ServiceAccount ca.crt value empty")
 	}
-	saToken := filteredSecrets[0].Data["token"]
-	if len(saToken) == 0 {
-		return errors.New("ServiceAccount token value empty")
+	token := filteredSecrets[0].Data["token"]
+	if len(token) == 0 {
+		return nil, errors.New("ServiceAccount token value empty")
 	}
-	return nc.Windows.ConfigureWICD(nodeConfigCache.apiServerEndpoint, saCA, saToken)
+	return &authentication{caCert: caCert, token: token}, nil
 }
 
 // CreatePubKeyHashAnnotation returns a formatted string which can be used for a public key annotation on a node.

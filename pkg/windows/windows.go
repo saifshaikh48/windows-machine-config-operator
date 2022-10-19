@@ -59,6 +59,8 @@ const (
 	ContainerdServiceName = "containerd"
 	// wicdServiceName is the Windows service name for WICD
 	wicdServiceName = "windows-instance-config-daemon"
+	// wicdPath is the path to the WICD executable
+	wicdPath = K8sDir + "windows-instance-config-daemon.exe"
 	// windowsExporterPath is the location of the windows_exporter.exe
 	windowsExporterPath = K8sDir + "windows_exporter.exe"
 	// NetworkConfScriptPath is the location of the network configuration script
@@ -114,6 +116,10 @@ const (
 	ManagedTag = "OpenShift managed"
 	// containersFeatureName is the name of the Windows feature that is required to be enabled on the Windows instance.
 	containersFeatureName = "Containers"
+	// wicdCAFile is the name of the file that holds the WICD service account CA certificate
+	wicdCAFile = "sa-ca.crt"
+	// wicdTokenFile is the name of the file that holds the WICD service account secret token
+	wicdTokenFile = "sa-token"
 )
 
 var (
@@ -211,8 +217,8 @@ type Windows interface {
 	Run(string, bool) (string, error)
 	// Reinitialize re-initializes the Windows VM's SSH client
 	Reinitialize() error
-	// Configure prepares the Windows VM for the bootstrapper and then runs it
-	Configure() error
+	// Bootstrap prepares the Windows instance and runs the WICD bootstrap command
+	Bootstrap(string, string, []byte, []byte) error
 	// ConfigureWICD ensures that the Windows Instance Config Daemon is running on the node
 	ConfigureWICD(string, []byte, []byte) error
 	// ConfigureKubeProxy ensures that the kube-proxy service is running
@@ -456,7 +462,7 @@ func (vm *windows) Deconfigure() error {
 	return nil
 }
 
-func (vm *windows) Configure() error {
+func (vm *windows) Bootstrap(desiredVer, apiServerURL string, serviceAccountCA, serviceAccountToken []byte) error {
 	vm.log.Info("configuring")
 	if err := vm.EnsureRequiredServicesStopped(); err != nil {
 		return errors.Wrap(err, "unable to stop all services")
@@ -474,7 +480,13 @@ func (vm *windows) Configure() error {
 		return errors.Wrapf(err, "error configuring containerd")
 	}
 
-	return vm.runBootstrapper()
+	if err := vm.ensureWICDSecretContent(serviceAccountCA, serviceAccountToken); err != nil {
+		return err
+	}
+	wicdBootstrapCmd := fmt.Sprintf("%s bootstrap --desired-version %s --api-server %s --sa-ca %s%s --sa-token %s%s",
+		wicdPath, desiredVer, apiServerURL, K8sDir, wicdCAFile, K8sDir, wicdTokenFile)
+	_, err := vm.Run(wicdBootstrapCmd, true)
+	return err
 }
 
 // configureContainerd configures the Windows defender exclusion and starts the
@@ -509,19 +521,11 @@ func (vm *windows) configureContainerd() error {
 
 // ConfigureWICD starts the Windows Instance Config Daemon service
 func (vm *windows) ConfigureWICD(apiServerURL string, serviceAccountCA, serviceAccountToken []byte) error {
-	saCAFile := "sa-ca.crt"
-	saTokenFile := "sa-token"
-	err := vm.EnsureFileContent(serviceAccountCA, saCAFile, K8sDir)
-	if err != nil {
+	if err := vm.ensureWICDSecretContent(serviceAccountCA, serviceAccountToken); err != nil {
 		return err
 	}
-	err = vm.EnsureFileContent(serviceAccountToken, saTokenFile, K8sDir)
-	if err != nil {
-		return err
-	}
-	wicdPath := K8sDir + "windows-instance-config-daemon.exe"
 	wicdServiceArgs := fmt.Sprintf("controller --windows-service --log-dir %s --api-server %s --sa-ca %s%s --sa-token %s%s",
-		wicdLogDir, apiServerURL, K8sDir, saCAFile, K8sDir, saTokenFile)
+		wicdLogDir, apiServerURL, K8sDir, wicdCAFile, K8sDir, wicdTokenFile)
 	wicdService, err := newService(wicdPath, wicdServiceName, wicdServiceArgs, nil)
 	if err != nil {
 		return errors.Wrapf(err, "error creating %s service object", wicdServiceName)
@@ -1021,6 +1025,15 @@ func (vm *windows) rebootAndReinitialize() error {
 		return errors.Wrap(err, "error reinitializing SSH connection after VM reboot")
 	}
 	return nil
+}
+
+// ensureWICDSecretContent checks if the WICD CA cert and token files on the instance hold the expected values
+func (vm *windows) ensureWICDSecretContent(serviceAccountCA, serviceAccountToken []byte) error {
+	err := vm.EnsureFileContent(serviceAccountCA, wicdCAFile, K8sDir)
+	if err != nil {
+		return err
+	}
+	return vm.EnsureFileContent(serviceAccountToken, wicdTokenFile, K8sDir)
 }
 
 // Generic helper methods
