@@ -108,17 +108,18 @@ func TestResolveNodeVariables(t *testing.T) {
 	}
 	for _, test := range testIO {
 		t.Run(test.name, func(t *testing.T) {
-			c, err := NewServiceController(context.TODO(), test.nodeName, wmcoNamespace, Options{
-				Client: clientfake.NewClientBuilder().WithObjects(&core.Node{
-					ObjectMeta: meta.ObjectMeta{
-						Name:        "node",
-						Annotations: test.nodeAnnotations,
-						Labels:      test.nodeLabels,
-					},
-				}).Build(),
-				Mgr:       fake.NewTestMgr(nil),
-				cmdRunner: &fakePSCmdRunner{},
-			})
+			c, err := NewServiceController(context.TODO(), test.nodeName, wmcoNamespace, nil,
+				Options{
+					Client: clientfake.NewClientBuilder().WithObjects(&core.Node{
+						ObjectMeta: meta.ObjectMeta{
+							Name:        "node",
+							Annotations: test.nodeAnnotations,
+							Labels:      test.nodeLabels,
+						},
+					}).Build(),
+					Mgr:       fake.NewTestMgr(nil),
+					cmdRunner: &fakePSCmdRunner{},
+				})
 			require.NoError(t, err)
 			actual, err := c.resolveNodeVariables(test.service)
 			if test.expectErr {
@@ -196,16 +197,17 @@ func TestResolvePowershellVariables(t *testing.T) {
 	}
 	for _, test := range testIO {
 		t.Run(test.name, func(t *testing.T) {
-			c, err := NewServiceController(context.TODO(), "", wmcoNamespace, Options{
-				Client: clientfake.NewClientBuilder().Build(),
-				Mgr:    fake.NewTestMgr(nil),
-				cmdRunner: &fakePSCmdRunner{
-					map[string]string{
-						"c:\\k\\script.ps1": "127.0.0.1",
-						"c:\\k\\test.ps1":   "test-output",
+			c, err := NewServiceController(context.TODO(), "", wmcoNamespace, nil,
+				Options{
+					Client: clientfake.NewClientBuilder().Build(),
+					Mgr:    fake.NewTestMgr(nil),
+					cmdRunner: &fakePSCmdRunner{
+						map[string]string{
+							"c:\\k\\script.ps1": "127.0.0.1",
+							"c:\\k\\test.ps1":   "test-output",
+						},
 					},
-				},
-			})
+				})
 			require.NoError(t, err)
 			actual, err := c.resolvePowershellVariables(test.service)
 			if test.expectErr {
@@ -365,19 +367,20 @@ func TestReconcileService(t *testing.T) {
 	}
 	for _, test := range testIO {
 		t.Run(test.name, func(t *testing.T) {
-			c, err := NewServiceController(context.TODO(), "node", wmcoNamespace, Options{
-				Client: clientfake.NewClientBuilder().WithObjects(&core.Node{
-					ObjectMeta: meta.ObjectMeta{
-						Name: "node",
+			c, err := NewServiceController(context.TODO(), "node", wmcoNamespace, nil,
+				Options{
+					Client: clientfake.NewClientBuilder().WithObjects(&core.Node{
+						ObjectMeta: meta.ObjectMeta{
+							Name: "node",
+						},
+					}).Build(),
+					Mgr: fake.NewTestMgr(map[string]*fake.FakeService{"fakeservice": test.service}),
+					cmdRunner: &fakePSCmdRunner{
+						map[string]string{
+							"c:\\k\\script.ps1": "127.0.0.1",
+						},
 					},
-				}).Build(),
-				Mgr: fake.NewTestMgr(map[string]*fake.FakeService{"fakeservice": test.service}),
-				cmdRunner: &fakePSCmdRunner{
-					map[string]string{
-						"c:\\k\\script.ps1": "127.0.0.1",
-					},
-				},
-			})
+				})
 			require.NoError(t, err)
 			err = c.reconcileService(test.service, test.expectedService)
 			if test.expectErr {
@@ -476,11 +479,12 @@ func TestBootstrap(t *testing.T) {
 			clusterObjs := []client.Object{cm}
 
 			winSvcMgr := fake.NewTestMgr(make(map[string]*fake.FakeService))
-			sc, err := NewServiceController(context.TODO(), "", wmcoNamespace, Options{
-				Client:    clientfake.NewClientBuilder().WithObjects(clusterObjs...).Build(),
-				Mgr:       winSvcMgr,
-				cmdRunner: &fakePSCmdRunner{},
-			})
+			sc, err := NewServiceController(context.TODO(), "", wmcoNamespace, nil,
+				Options{
+					Client:    clientfake.NewClientBuilder().WithObjects(clusterObjs...).Build(),
+					Mgr:       winSvcMgr,
+					cmdRunner: &fakePSCmdRunner{},
+				})
 			require.NoError(t, err)
 
 			err = sc.Bootstrap(desiredVersion)
@@ -653,11 +657,12 @@ func TestReconcile(t *testing.T) {
 			}
 
 			winSvcMgr := fake.NewTestMgr(test.existingServices)
-			c, err := NewServiceController(context.TODO(), "node", wmcoNamespace, Options{
-				Client:    clientfake.NewClientBuilder().WithObjects(clusterObjs...).Build(),
-				Mgr:       winSvcMgr,
-				cmdRunner: &fakePSCmdRunner{},
-			})
+			c, err := NewServiceController(context.TODO(), "node", wmcoNamespace, nil,
+				Options{
+					Client:    clientfake.NewClientBuilder().WithObjects(clusterObjs...).Build(),
+					Mgr:       winSvcMgr,
+					cmdRunner: &fakePSCmdRunner{},
+				})
 			_, err = c.Reconcile(context.TODO(), ctrl.Request{NamespacedName: types.NamespacedName{Name: "node"}})
 			if test.expectErr {
 				assert.Error(t, err)

@@ -152,8 +152,9 @@ func (nc *nodeConfig) Configure() error {
 		return err
 	}
 
+	wmcoVersion := version.Get()
 	// Start all required services to bootstrap a node object using WICD
-	if err := nc.Windows.Bootstrap(version.Get(), nodeConfigCache.apiServerEndpoint, nc.wmcoNamespace,
+	if err := nc.Windows.Bootstrap(wmcoVersion, nodeConfigCache.apiServerEndpoint, nc.wmcoNamespace,
 		nodeConfigCache.credentials); err != nil {
 		return errors.Wrap(err, "bootstrapping the Windows instance failed")
 	}
@@ -163,11 +164,6 @@ func (nc *nodeConfig) Configure() error {
 		// populate node object in nodeConfig in the case of a new Windows instance
 		if err := nc.setNode(false); err != nil {
 			return errors.Wrap(err, "error getting node object")
-		}
-
-		// Make a best effort to cordon the node until it is fully configured
-		if err := drain.RunCordonOrUncordon(drainHelper, nc.node, true); err != nil {
-			nc.log.Info("unable to cordon", "node", nc.node.GetName(), "error", err)
 		}
 
 		// Ensure we are labeling and annotating the node as soon as the Node object is created, so that we can identify
@@ -180,31 +176,45 @@ func (nc *nodeConfig) Configure() error {
 			return errors.Wrapf(err, "error updating public key hash and additional annotations on node %s",
 				nc.node.GetName())
 		}
+		nc.log.Info("applied pub key anno")
 
-		ownedByCCM, err := isCloudControllerOwnedByCCM()
-		if err != nil {
-			return errors.Wrap(err, "unable to check if cloud controller owned by cloud controller manager")
+		// ---------------------- move to WICD
+		// Make a best effort to cordon the node until it is fully configured
+		if err := drain.RunCordonOrUncordon(drainHelper, nc.node, true); err != nil {
+			nc.log.Info("unable to cordon", "node", nc.node.GetName(), "error", err)
 		}
+		nc.log.Info("cordoned node")
 
-		if err := nc.Windows.ConfigureWICD(nodeConfigCache.apiServerEndpoint, nc.wmcoNamespace,
+		if err := nc.Windows.ConfigureWICD(wmcoVersion, nodeConfigCache.apiServerEndpoint, nc.wmcoNamespace,
 			nodeConfigCache.credentials); err != nil {
 			return errors.Wrap(err, "configuring WICD failed")
 		}
-		// Set the desired version annotation, communicating to WICD which Windows services configmap to use
-		if err := nc.applyLabelsAndAnnotations(nil, map[string]string{DesiredVersionAnnotation: version.Get()}); err != nil {
-			return errors.Wrapf(err, "error updating desired version annotation on node %s", nc.node.GetName())
-		}
+		nc.log.Info("ran WICD configure")
 
-		// Now that basic kubelet configuration is complete, configure networking in the node
-		if err := nc.configureNetwork(); err != nil {
-			return errors.Wrap(err, "configuring node network failed")
+		// Uncordon the node now that it is fully configured
+		if err := drain.RunCordonOrUncordon(drainHelper, nc.node, false); err != nil {
+			return errors.Wrapf(err, "error uncordoning the node %s", nc.node.GetName())
 		}
+		nc.log.Info("uncordoned node")
+		// move to WICD ----------------------
+
+		// Wait for version annotation. This prevents uncordoning the node until all node services and networks are up
+		if err := nc.waitForNodeAnnotation(metadata.VersionAnnotation, wmcoVersion); err != nil {
+			return errors.Wrapf(err, "error waiting for proper %s annotation for node %s", metadata.VersionAnnotation,
+				nc.node.GetName())
+		}
+		nc.log.Info("found version anno")
 
 		// Now that the node has been fully configured, add the version annotation to signify that the node
 		// was successfully configured by this version of WMCO
 		// populate node object in nodeConfig once more
 		if err := nc.setNode(false); err != nil {
 			return errors.Wrap(err, "error getting node object")
+		}
+
+		ownedByCCM, err := isCloudControllerOwnedByCCM()
+		if err != nil {
+			return errors.Wrap(err, "unable to check if cloud controller owned by cloud controller manager")
 		}
 
 		// If we deploy on Azure with CCM support, we have to explicitly remove the cloud taint, because cloud node
@@ -222,16 +232,6 @@ func (nc *nodeConfig) Configure() error {
 			if err := cloudnodeutil.RemoveTaintOffNode(nc.k8sclientset, nc.node.GetName(), nc.node, cloudTaint); err != nil {
 				return errors.Wrapf(err, "error excluding cloud taint on node %s", nc.node.GetName())
 			}
-		}
-		// Version annotation is the indicator that the node was fully configured by this version of WMCO, so it should
-		// be added at the end of the process.
-		if err := nc.applyLabelsAndAnnotations(nil, map[string]string{metadata.VersionAnnotation: version.Get()}); err != nil {
-			return errors.Wrapf(err, "error updating version annotation on node %s", nc.node.GetName())
-		}
-
-		// Uncordon the node now that it is fully configured
-		if err := drain.RunCordonOrUncordon(drainHelper, nc.node, false); err != nil {
-			return errors.Wrapf(err, "error uncordoning the node %s", nc.node.GetName())
 		}
 
 		nc.log.Info("instance has been configured as a worker node", "version",
@@ -397,35 +397,6 @@ func isCloudControllerOwnedByCCM() (bool, error) {
 	return cluster.IsCloudControllerOwnedByCCM(client)
 }
 
-// configureNetwork configures k8s networking in the node
-// we are assuming that the WindowsVM and node objects are valid
-func (nc *nodeConfig) configureNetwork() error {
-	// Wait until the node object has the hybrid overlay subnet annotation. Otherwise the hybrid-overlay will fail to
-	// start
-	if err := nc.waitForNodeAnnotation(HybridOverlaySubnet); err != nil {
-		return errors.Wrapf(err, "error waiting for %s node annotation for %s", HybridOverlaySubnet,
-			nc.node.GetName())
-	}
-
-	// Wait until the node object has the hybrid overlay MAC annotation. This indicates that hybrid-overlay is running
-	// successfully, and is required for the CNI configuration to start.
-	if err := nc.waitForNodeAnnotation(HybridOverlayMac); err != nil {
-		return errors.Wrapf(err, "error waiting for %s node annotation for %s", HybridOverlayMac,
-			nc.node.GetName())
-	}
-	// Running the hybrid-overlay causes network reconfiguration in the Windows VM which results in the ssh connection
-	// being closed, and the client is not smart enough to reconnect.
-	if err := nc.Windows.Reinitialize(); err != nil {
-		return errors.Wrap(err, "error reinitializing VM after running hybrid-overlay")
-	}
-
-	// Start the kube-proxy service
-	if err := nc.Windows.ConfigureKubeProxy(); err != nil {
-		return errors.Wrapf(err, "error starting kube-proxy for %s", nc.node.GetName())
-	}
-	return nil
-}
-
 // setNode finds the Node associated with the VM that has been configured, and sets the node field of the
 // nodeConfig object. If quickCheck is set, the function does a quicker check for the node which is useful in the node
 // reconfiguration case.
@@ -458,9 +429,9 @@ func (nc *nodeConfig) setNode(quickCheck bool) error {
 	return errors.Wrapf(err, "unable to find node with address %s", instanceAddress)
 }
 
-// waitForNodeAnnotation checks if the node object has the given annotation and waits for retry.Interval seconds and
-// returns an error if the annotation does not appear in that time frame.
-func (nc *nodeConfig) waitForNodeAnnotation(annotation string) error {
+// waitForNodeAnnotation checks if the node object has the given annotation with the expected value.
+// Waits for retry.Interval seconds and returns an error if it does not appear in that time frame.
+func (nc *nodeConfig) waitForNodeAnnotation(annotation, expectedVal string) error {
 	nodeName := nc.node.GetName()
 	var found bool
 	err := wait.Poll(retry.Interval, retry.Timeout, func() (bool, error) {
@@ -469,8 +440,8 @@ func (nc *nodeConfig) waitForNodeAnnotation(annotation string) error {
 			nc.log.V(1).Error(err, "unable to get associated node object")
 			return false, nil
 		}
-		_, found := node.Annotations[annotation]
-		if found {
+		val, found := node.Annotations[annotation]
+		if found && val == expectedVal {
 			// update node to avoid staleness
 			nc.node = node
 			return true, nil

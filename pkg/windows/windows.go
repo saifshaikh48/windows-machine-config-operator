@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/go-logr/logr"
 	"github.com/pkg/errors"
@@ -232,9 +231,7 @@ type Windows interface {
 	// Bootstrap prepares the Windows instance and runs the WICD bootstrap command
 	Bootstrap(string, string, string, *Authentication) error
 	// ConfigureWICD ensures that the Windows Instance Config Daemon is running on the node
-	ConfigureWICD(string, string, *Authentication) error
-	// ConfigureKubeProxy ensures that the kube-proxy service is running
-	ConfigureKubeProxy() error
+	ConfigureWICD(string, string, string, *Authentication) error
 	// Deconfigure removes all files and networks created by WMCO and runs the WICD cleanup command.
 	Deconfigure(string, string) error
 	// RunWICDCleanup runs the WICD cleanup command that ensures all services configured by WICD are stopped.
@@ -460,12 +457,12 @@ func (vm *windows) Bootstrap(desiredVer, apiServerURL, watchNamespace string, cr
 }
 
 // ConfigureWICD starts the Windows Instance Config Daemon service
-func (vm *windows) ConfigureWICD(apiServerURL, watchNamespace string, credentials *Authentication) error {
+func (vm *windows) ConfigureWICD(desiredVer, apiServerURL, watchNamespace string, credentials *Authentication) error {
 	if err := vm.ensureWICDSecretContent(credentials); err != nil {
 		return err
 	}
-	wicdServiceArgs := fmt.Sprintf("controller --windows-service --log-dir %s --api-server %s --sa-ca %s --sa-token %s --namespace %s",
-		wicdLogDir, apiServerURL, wicdCAFile, wicdTokenFile, watchNamespace)
+	wicdServiceArgs := fmt.Sprintf("controller --windows-service --desired-version %s --log-dir %s --api-server %s --sa-ca %s --sa-token %s --namespace %s",
+		desiredVer, wicdLogDir, apiServerURL, wicdCAFile, wicdTokenFile, watchNamespace)
 	wicdService, err := newService(wicdPath, wicdServiceName, wicdServiceArgs, nil)
 	if err != nil {
 		return errors.Wrapf(err, "error creating %s service object", wicdServiceName)
@@ -474,18 +471,6 @@ func (vm *windows) ConfigureWICD(apiServerURL, watchNamespace string, credential
 		return errors.Wrapf(err, "error ensuring %s Windows service has started running", wicdServiceName)
 	}
 	vm.log.Info("configured", "service", wicdServiceName, "args", wicdServiceArgs)
-	return nil
-}
-
-func (vm *windows) ConfigureKubeProxy() error {
-	// TODO: Currently this function, and waiting for kube-proxy to be running, is required. kube-proxy is the final
-	//       Windows Service. WMCO still has to perform post-configuration steps such as applying the version
-	//       annotation, which indicates the the Node has been full configured. This function should be removed as part
-	//       of https://issues.redhat.com/browse/WINC-741, where WICD will take care of those steps.
-	vm.log.V(1).Info("waiting for kube-proxy to start running")
-	if err := vm.waitForServiceToRun(KubeProxyServiceName); err != nil {
-		return errors.Wrapf(err, "error waiting for %s Windows service to start running", KubeProxyServiceName)
-	}
 	return nil
 }
 
@@ -793,48 +778,6 @@ func (vm *windows) startService(svc *service) error {
 		return errors.Wrapf(err, "failed to start %s service with output: %s", svc.name, out)
 	}
 	return nil
-}
-
-// waitForHNSNetworks waits for the OVN overlay HNS networks to be created until the timeout is reached
-func (vm *windows) waitForHNSNetworks() error {
-	var out string
-	var err error
-	for retries := 0; retries < retry.Count; retries++ {
-		out, err = vm.Run("Get-HnsNetwork", true)
-		if err != nil {
-			// retry
-			continue
-		}
-
-		if strings.Contains(out, BaseOVNKubeOverlayNetwork) &&
-			strings.Contains(out, OVNKubeOverlayNetwork) {
-			return nil
-		}
-		time.Sleep(retry.Interval)
-	}
-
-	// OVN overlay HNS networks were not found
-	vm.log.Info("Get-HnsNetwork", "output", out)
-	return errors.Wrap(err, "timeout waiting for OVN overlay HNS networks")
-}
-
-// waitForServiceToRun waits for the given service to be in RUNNING state
-// until the timeout is reached
-func (vm *windows) waitForServiceToRun(serviceName string) error {
-	var err error
-	for retries := 0; retries < retry.Count; retries++ {
-		serviceRunning, err := vm.isRunning(serviceName)
-		if err != nil {
-			return errors.Wrapf(err, "unable to check if %s Windows service is running", serviceName)
-		}
-		if serviceRunning {
-			return nil
-		}
-		time.Sleep(retry.Interval)
-	}
-
-	// service did not reach running state
-	return fmt.Errorf("timeout waiting for %s service to be in running state: %v", serviceName, err)
 }
 
 // newFileInfo returns a pointer to a FileInfo object created from the specified file on the Windows VM
