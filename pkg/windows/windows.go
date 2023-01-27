@@ -231,7 +231,7 @@ type Windows interface {
 	// Bootstrap prepares the Windows instance and runs the WICD bootstrap command
 	Bootstrap(string, string, string, *Authentication) error
 	// ConfigureWICD ensures that the Windows Instance Config Daemon is running on the node
-	ConfigureWICD(string, string, string, *Authentication) error
+	ConfigureWICD(string, string, *Authentication) error
 	// Deconfigure removes all files and networks created by WMCO and runs the WICD cleanup command.
 	Deconfigure(string, string) error
 	// RunWICDCleanup runs the WICD cleanup command that ensures all services configured by WICD are stopped.
@@ -457,12 +457,12 @@ func (vm *windows) Bootstrap(desiredVer, apiServerURL, watchNamespace string, cr
 }
 
 // ConfigureWICD starts the Windows Instance Config Daemon service
-func (vm *windows) ConfigureWICD(desiredVer, apiServerURL, watchNamespace string, credentials *Authentication) error {
+func (vm *windows) ConfigureWICD(apiServerURL, watchNamespace string, credentials *Authentication) error {
 	if err := vm.ensureWICDSecretContent(credentials); err != nil {
 		return err
 	}
-	wicdServiceArgs := fmt.Sprintf("controller --windows-service --desired-version %s --log-dir %s --api-server %s --sa-ca %s --sa-token %s --namespace %s",
-		desiredVer, wicdLogDir, apiServerURL, wicdCAFile, wicdTokenFile, watchNamespace)
+	wicdServiceArgs := fmt.Sprintf("controller --windows-service --log-dir %s --api-server %s --sa-ca %s --sa-token %s --namespace %s",
+		wicdLogDir, apiServerURL, wicdCAFile, wicdTokenFile, watchNamespace)
 	wicdService, err := newService(wicdPath, wicdServiceName, wicdServiceArgs, nil)
 	if err != nil {
 		return errors.Wrapf(err, "error creating %s service object", wicdServiceName)

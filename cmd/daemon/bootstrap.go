@@ -22,7 +22,6 @@ import (
 	"context"
 
 	"github.com/spf13/cobra"
-	"k8s.io/client-go/kubernetes"
 	"k8s.io/klog/v2"
 
 	"github.com/openshift/windows-machine-config-operator/pkg/daemon/config"
@@ -55,11 +54,7 @@ func runBootstrapCmd(cmd *cobra.Command, args []string) {
 	if err != nil {
 		klog.Exitf("error using service account to build config: %s", err.Error())
 	}
-	clientset, err := kubernetes.NewForConfig(cfg)
-	if err != nil {
-		klog.Exitf("error creating kubernetes clientset %s", err.Error())
-	}
-	sc, err := controller.NewServiceController(context.TODO(), "", namespace, clientset, controller.Options{Config: cfg})
+	sc, err := controller.NewServiceController(context.TODO(), "", namespace, controller.Options{Config: cfg})
 	if err != nil {
 		klog.Exitf("error creating Service Controller: %s", err.Error())
 	}

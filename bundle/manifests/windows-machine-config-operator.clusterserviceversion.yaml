@@ -13,7 +13,7 @@ metadata:
     operatorframework.io/suggested-namespace: openshift-windows-machine-config-operator
     operators.openshift.io/valid-subscription: '["Red Hat OpenShift support for Windows
       Containers"]'
-    operators.operatorframework.io/builder: operator-sdk-v1.15.0+git
+    operators.operatorframework.io/builder: operator-sdk-v1.14.0+git
     operators.operatorframework.io/project_layout: go.kubebuilder.io/v3
     repository: https://github.com/openshift/windows-machine-config-operator
     support: Red Hat
@@ -390,7 +390,7 @@ spec:
                 - name: OPERATOR_NAME
                   value: windows-machine-config-operator
                 image: REPLACE_IMAGE
-                imagePullPolicy: IfNotPresent
+                imagePullPolicy: Always
                 name: manager
                 resources: {}
               hostNetwork: true

@@ -47,9 +47,6 @@ func init() {
 		"if not provided, the command will log to stdout/stderr")
 	controllerCmd.PersistentFlags().BoolVar(&windowsService, "windows-service", false,
 		"Enables running as a Windows service")
-	controllerCmd.PersistentFlags().StringVar(&desiredVersion, "desired-version", "",
-		"Version of the services ConfigMap to use as the source of truth for service configuration")
-	controllerCmd.MarkPersistentFlagRequired("desired-version")
 }
 
 func runControllerCmd(cmd *cobra.Command, args []string) {
@@ -68,7 +65,7 @@ func runControllerCmd(cmd *cobra.Command, args []string) {
 		}
 	}
 	klog.Info("service controller running")
-	if err := controller.RunController(ctx, apiServerURL, saCA, saToken, desiredVersion, namespace); err != nil {
+	if err := controller.RunController(ctx, apiServerURL, saCA, saToken, namespace); err != nil {
 		klog.Error(err)
 		os.Exit(1)
 	}

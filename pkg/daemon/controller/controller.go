@@ -30,11 +30,8 @@ import (
 	"golang.org/x/sys/windows/svc/mgr"
 	core "k8s.io/api/core/v1"
 	k8sapierrors "k8s.io/apimachinery/pkg/api/errors"
-	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/wait"
-	"k8s.io/client-go/kubernetes"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/util/jsonpath"
@@ -55,7 +52,6 @@ import (
 	"github.com/openshift/windows-machine-config-operator/pkg/metadata"
 	"github.com/openshift/windows-machine-config-operator/pkg/nodeconfig"
 	"github.com/openshift/windows-machine-config-operator/pkg/nodeutil"
-	"github.com/openshift/windows-machine-config-operator/pkg/retry"
 	"github.com/openshift/windows-machine-config-operator/pkg/services"
 	"github.com/openshift/windows-machine-config-operator/pkg/servicescm"
 	"github.com/openshift/windows-machine-config-operator/pkg/windows"
@@ -103,7 +99,6 @@ func setDefaults(o Options) (Options, error) {
 type ServiceController struct {
 	manager.Manager
 	client         client.Client
-	k8sclientset   *kubernetes.Clientset
 	ctx            context.Context
 	nodeName       string
 	watchNamespace string
@@ -116,31 +111,10 @@ func (sc *ServiceController) applyLabelsAndAnnotations(labels, annotations map[s
 	if err != nil {
 		return err
 	}
-	_, err = sc.k8sclientset.CoreV1().Nodes().Patch(context.TODO(), sc.nodeName, types.JSONPatchType, patchData,
-		v1.PatchOptions{})
+	node := &core.Node{}
+	err = sc.client.Patch(sc.ctx, node, client.RawPatch(types.JSONPatchType, patchData), &client.PatchOptions{})
 	if err != nil {
 		return errors.Wrapf(err, "unable to apply patch data %s", patchData)
-	}
-	return nil
-}
-
-// waitForNodeAnnotation checks if the node object has the given annotation and waits for retry.Interval seconds and
-// returns an error if the annotation does not appear in that time frame.
-func (sc *ServiceController) waitForNodeAnnotation(annotation string) error {
-	nodeName := sc.nodeName
-	var found bool
-	err := wait.Poll(retry.Interval, retry.Timeout, func() (bool, error) {
-		node, err := sc.k8sclientset.CoreV1().Nodes().Get(context.TODO(), nodeName, v1.GetOptions{})
-		if err != nil {
-			klog.V(1).Error(err, "unable to get associated node object")
-			return false, nil
-		}
-		_, found := node.Annotations[annotation]
-		return found, nil
-	})
-
-	if !found {
-		return errors.Wrapf(err, "timeout waiting for %s node annotation", annotation)
 	}
 	return nil
 }
@@ -161,7 +135,7 @@ func (sc *ServiceController) Bootstrap(desiredVersion string) error {
 }
 
 // RunController is the entry point of WICD's controller functionality
-func RunController(ctx context.Context, apiServerURL, saCA, saToken, desiredVersion, watchNamespace string) error {
+func RunController(ctx context.Context, apiServerURL, saCA, saToken, watchNamespace string) error {
 	cfg, err := config.FromServiceAccount(apiServerURL, saCA, saToken)
 	if err != nil {
 		klog.Error(err)
@@ -190,20 +164,16 @@ func RunController(ctx context.Context, apiServerURL, saCA, saToken, desiredVers
 	if err != nil {
 		return errors.Wrap(err, "unable to start manager")
 	}
-	clientset, err := kubernetes.NewForConfig(ctrlMgr.GetConfig())
-	if err != nil {
-		return errors.Wrap(err, "error creating kubernetes clientset")
-	}
 
-	sc, err := NewServiceController(ctx, node.Name, watchNamespace, clientset, Options{Client: ctrlMgr.GetClient()})
+	sc, err := NewServiceController(ctx, node.Name, watchNamespace, Options{Client: ctrlMgr.GetClient()})
 	if err != nil {
 		return err
 	}
-	// Set the desired version annotation, communicating to WICD which Windows services configmap to use
-	klog.Info("Applying desired version annotation")
-	if err := sc.applyLabelsAndAnnotations(nil, map[string]string{nodeconfig.DesiredVersionAnnotation: desiredVersion}); err != nil {
-		return errors.Wrapf(err, "error updating desired version annotation on node %s", sc.nodeName)
-	}
+	// TODO: does this stay here or in WMCO?
+	// // Set the desired version annotation, communicating to WICD which Windows services configmap to use
+	// if err := sc.applyLabelsAndAnnotations(nil, map[string]string{nodeconfig.DesiredVersionAnnotation: desiredVersion}); err != nil {
+	// 	return errors.Wrapf(err, "error updating desired version annotation on node %s", sc.nodeName)
+	// }
 
 	if err = sc.SetupWithManager(ctrlMgr); err != nil {
 		return err
@@ -216,14 +186,13 @@ func RunController(ctx context.Context, apiServerURL, saCA, saToken, desiredVers
 }
 
 // NewServiceController returns a pointer to a ServiceController object
-func NewServiceController(ctx context.Context, nodeName, watchNamespace string, k8sclientset *kubernetes.Clientset,
-	options Options) (*ServiceController, error) {
+func NewServiceController(ctx context.Context, nodeName, watchNamespace string, options Options) (*ServiceController, error) {
 	o, err := setDefaults(options)
 	if err != nil {
 		return nil, err
 	}
 	return &ServiceController{client: o.Client, Manager: o.Mgr, ctx: ctx, nodeName: nodeName, psCmdRunner: o.cmdRunner,
-		watchNamespace: watchNamespace, k8sclientset: k8sclientset}, nil
+		watchNamespace: watchNamespace}, nil
 }
 
 // SetupWithManager sets up the controller with the Manager.

@@ -178,6 +178,13 @@ func (nc *nodeConfig) Configure() error {
 		}
 		nc.log.Info("applied pub key anno")
 
+		// TODO: does this stay here? After cordoning? Done by WICD instead? Is it even needed (cmd line flag)?
+		// Set the desired version annotation, communicating to WICD which Windows services configmap to use
+		if err := nc.applyLabelsAndAnnotations(nil, map[string]string{DesiredVersionAnnotation: wmcoVersion}); err != nil {
+			return errors.Wrapf(err, "error updating desired version annotation on node %s", nc.node.GetName())
+		}
+		nc.log.Info("applied desired version annotation")
+
 		// ---------------------- move to WICD
 		// Make a best effort to cordon the node until it is fully configured
 		if err := drain.RunCordonOrUncordon(drainHelper, nc.node, true); err != nil {
@@ -185,7 +192,7 @@ func (nc *nodeConfig) Configure() error {
 		}
 		nc.log.Info("cordoned node")
 
-		if err := nc.Windows.ConfigureWICD(wmcoVersion, nodeConfigCache.apiServerEndpoint, nc.wmcoNamespace,
+		if err := nc.Windows.ConfigureWICD(nodeConfigCache.apiServerEndpoint, nc.wmcoNamespace,
 			nodeConfigCache.credentials); err != nil {
 			return errors.Wrap(err, "configuring WICD failed")
 		}
