@@ -26,6 +26,7 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/sys/windows/registry"
 	"golang.org/x/sys/windows/svc"
 	"golang.org/x/sys/windows/svc/mgr"
 	core "k8s.io/api/core/v1"
@@ -48,6 +49,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/controller-runtime/pkg/source"
 
+	"github.com/openshift/windows-machine-config-operator/pkg/cluster"
 	"github.com/openshift/windows-machine-config-operator/pkg/daemon/manager"
 	"github.com/openshift/windows-machine-config-operator/pkg/daemon/powershell"
 	"github.com/openshift/windows-machine-config-operator/pkg/daemon/winsvc"
@@ -250,6 +252,41 @@ func (sc *ServiceController) Reconcile(_ context.Context, req ctrl.Request) (res
 		return ctrl.Result{}, err
 	}
 
+	restartRequired, err := sc.reconcileEnvironmentVariables(cmData.EnvironmentVars)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if restartRequired {
+		// Applying the reboot annotation results in an event picked up by WMCO's node controller to reboot the instance
+		if err = metadata.ApplyRebootAnnotation(sc.ctx, sc.client, node); err != nil {
+			return ctrl.Result{}, fmt.Errorf("error setting reboot annotation on node %s: %w", sc.nodeName, err)
+		}
+	}
+	// Wait until the environment variables at the process level are set as expected.
+	// This will only be picked up after WMCO reboots the instance
+	err = wait.PollUntilContextTimeout(sc.ctx, 15*time.Second, 2*time.Minute, true,
+		func(ctx context.Context) (done bool, err error) {
+			stillNeedsReboot := false
+			for _, varName := range cluster.SupportedProxyVars {
+				cmd := fmt.Sprintf("[Environment]::GetEnvironmentVariable('%s', 'Process')", varName)
+				out, err := sc.psCmdRunner.Run(cmd)
+				if err != nil {
+					return false, fmt.Errorf("error running PowerShell command %s with output %s: %w", cmd, out, err)
+				}
+				if strings.TrimSpace(out) != cmData.EnvironmentVars[varName] {
+					stillNeedsReboot = true
+				}
+			}
+			return !stillNeedsReboot, nil
+		})
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("error waiting for environment vars to get picked up by processes: %w", err)
+	}
+	// Remove the reboot annotation after we know the reboot occurred successfully. No-op if already not present
+	if err := metadata.RemoveRebootAnnotation(sc.ctx, sc.client, node); err != nil {
+		return ctrl.Result{}, err
+	}
+
 	// Reconcile state of Windows services with the ConfigMap data
 	if err = sc.reconcileServices(cmData.Services); err != nil {
 		return ctrl.Result{}, err
@@ -263,6 +300,39 @@ func (sc *ServiceController) Reconcile(_ context.Context, req ctrl.Request) (res
 		return ctrl.Result{}, fmt.Errorf("error updating version annotation on node %s: %w", sc.nodeName, err)
 	}
 	return ctrl.Result{}, nil
+}
+
+// reconcileEnvironmentVariables ensures that the proxy environment variables are set as expected on the instance
+// If there's any changes, an instance restart is required to ensure all processes pick up the updated values.
+func (sc *ServiceController) reconcileEnvironmentVariables(envVars map[string]string) (bool, error) {
+	// systemEnvVarRegistryPath is where system level environment variables are stored in the Windows OS
+	const systemEnvVarRegistryPath = `SYSTEM\CurrentControlSet\Control\Session Manager\Environment`
+	restartRequired := false
+	for _, name := range cluster.SupportedProxyVars {
+		registryKey, err := registry.OpenKey(registry.LOCAL_MACHINE, systemEnvVarRegistryPath, registry.ALL_ACCESS)
+		if err != nil {
+			return false, fmt.Errorf("unable to open Windows system registry key %s: %w", systemEnvVarRegistryPath, err)
+		}
+		actualVal, _, err := registryKey.GetStringValue(name)
+		if err != nil && err != registry.ErrNotExist {
+			return false, fmt.Errorf("unable to read environment variable %s: %w", name, err)
+		}
+
+		if actualVal != envVars[name] {
+			// We cannot use the os.Setenv since it calls syscall.Setenv which, calls syscall.SetEnvironmentVariable
+			// As per Microsoft docs: "Calling SetEnvironmentVariable has no effect on the system environment variables"
+			err := registryKey.SetStringValue(name, envVars[name])
+			if err != nil {
+				// Do not log value as proxy information is sensitive
+				return false, fmt.Errorf("unable to set environment variable %s: %w", name, err)
+			}
+			restartRequired = true
+		}
+		if err := registryKey.Close(); err != nil {
+			return false, fmt.Errorf("unable to close Windows system registry key: %w", err)
+		}
+	}
+	return restartRequired, nil
 }
 
 // reconcileServices ensures that all the services passed in via the services slice are created, configured properly

@@ -137,7 +137,7 @@ func NewNodeConfig(c client.Client, clientset *kubernetes.Clientset, clusterServ
 
 // Configure configures the Windows VM to make it a Windows worker node
 func (nc *nodeConfig) Configure() error {
-	drainHelper := nc.newDrainHelper()
+	drainHelper := nc.NewDrainHelper()
 	// If we find a node  it implies that we are reconfiguring and we should cordon the node
 	if err := nc.setNode(true); err == nil {
 		// Make a best effort to cordon the node until it is fully configured
@@ -447,8 +447,8 @@ func (nc *nodeConfig) setNode(quickCheck bool) error {
 	return nil
 }
 
-// newDrainHelper returns new drain.Helper instance
-func (nc *nodeConfig) newDrainHelper() *drain.Helper {
+// NewDrainHelper returns new drain.Helper instance
+func (nc *nodeConfig) NewDrainHelper() *drain.Helper {
 	return &drain.Helper{
 		Ctx:    context.TODO(),
 		Client: nc.k8sclientset,
@@ -469,7 +469,7 @@ func (nc *nodeConfig) Deconfigure() error {
 	}
 
 	// Cordon and drain the Node before we interact with the instance
-	drainHelper := nc.newDrainHelper()
+	drainHelper := nc.NewDrainHelper()
 	if err := drain.RunCordonOrUncordon(drainHelper, nc.node, true); err != nil {
 		return fmt.Errorf("unable to cordon node %s: %w", nc.node.GetName(), err)
 	}
