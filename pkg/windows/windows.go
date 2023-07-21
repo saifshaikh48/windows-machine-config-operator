@@ -204,6 +204,11 @@ func GetK8sDir() string {
 	return K8sDir
 }
 
+// GetRemoteDir returns the location of the remote temporary directory created on the Windows VM
+func GetRemoteDir() string {
+	return remoteDir
+}
+
 // Windows contains all the methods needed to configure a Windows VM to become a worker node
 type Windows interface {
 	// GetIPv4Address returns the IPv4 address of the associated instance.

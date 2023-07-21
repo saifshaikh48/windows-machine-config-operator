@@ -15,6 +15,7 @@ import (
 	"github.com/vincent-petithory/dataurl"
 	"golang.org/x/crypto/ssh"
 	core "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
 	meta "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
@@ -53,6 +54,10 @@ const (
 	// KubeletClientCAFilename is the name of the CA certificate file required by kubelet to interact
 	// with the kube-apiserver client
 	KubeletClientCAFilename = "kubelet-ca.crt"
+	// ProxyCertsConfigMap is the name of the ConfigMap that holds the trusted CA bundle for a cluster-wide proxy
+	ProxyCertsConfigMap = "trusted-ca"
+	// TrustedCABundleFileName is the name of trusted CA bundle file containing all certs trusted by the cluster
+	TrustedCABundleName = "ca-bundle.crt"
 	// mcoNamespace is the namespace the Machine Config Server is deployed in, which manages the node bootsrapper secret
 	mcoNamespace = "openshift-machine-config-operator"
 	// mcoBootstrapSecret is the resource name that holds the cert and token required to create the bootstrap kubeconfig
@@ -145,6 +150,24 @@ func (nc *nodeConfig) Configure() error {
 			nc.log.Info("unable to cordon", "node", nc.node.GetName(), "error", err)
 		}
 	}
+
+	//if cluster.IsProxyEnabled() {
+	// ensure cert bundle file on instance is populated with up-to-date data
+	nc.log.Info("getting proxy configmap")
+	trustedCA, err := nc.k8sclientset.CoreV1().ConfigMaps(nc.wmcoNamespace).Get(context.TODO(), ProxyCertsConfigMap,
+		meta.GetOptions{})
+	if err == nil {
+		nc.log.Info("GOT proxy configmap")
+		if err = nc.EnsureTrustedCABundle([]byte(trustedCA.Data[TrustedCABundleName])); err != nil {
+			return err
+		}
+	} else if !errors.IsNotFound(err) {
+		nc.log.Info("ERROR GETTING proxy configmap")
+		return err
+	} else {
+		nc.log.Info("DID NOT FIND proxy configmap")
+	}
+	//}
 
 	if err := nc.createBootstrapFiles(); err != nil {
 		return err
@@ -530,6 +553,82 @@ func (nc *nodeConfig) UpdateKubeletClientCA(contents []byte) error {
 	}
 	return nil
 }
+
+// UpdateTrustedCA updates the file containing the trusted CA bundle in the Windows node, if needed.
+// Returns a boolean indicating whether the file was actually updated
+func (nc *nodeConfig) EnsureTrustedCABundle(contents []byte) error {
+	nc.log.Info("updating trust bundle file")
+	// check CA bundle contents
+	if len(contents) == 0 {
+		// nothing do to for now, return
+		return nil
+	}
+	// Remove whitespace and comments so Windows can import all certs in one shot
+	//r := regexp.MustCompile(`-----END CERTIFICATE-----\s*(.*?)\s*-----BEGIN CERTIFICATE-----`)
+	//contents = []byte(r.ReplaceAllString(string(contents), "-----END CERTIFICATE-----\n-----BEGIN CERTIFICATE-----"))
+
+	//r := regexp.MustCompile(`\s*#\s*(.*?)\s*-----BEGIN CERTIFICATE-----`)
+	//contents = r.ReplaceAllString(string(contents), "\n-----BEGIN CERTIFICATE-----")
+
+	//Get-Content .\ca-bundle.crt | Where { $_ -notmatch "^\s*$|^#" }
+
+	/*
+			# Define the path to the file containing certificates
+		$filePath = "path/to/certificates.pem"
+
+		# Read the contents of the file, excluding lines starting with "#"
+		$fileContents = Get-Content -Path $filePath | Where { $_ -notmatch "^\s*$|^#" }
+
+		# Join the file contents back into a single string
+		$certificatesString = $fileContents -join "`n"
+
+		# Split the string into individual certificates
+		$certificates = $certificatesString -split "(?m)(?=-{5}BEGIN CERTIFICATE-{5})"
+
+		 $index = 1;
+		 foreach ($certificate in $certificates) {
+			# Define the output file path for each certificate
+			$outputFilePath = "./certificate$index.pem"
+
+		    # Remove any leading/trailing whitespace and line breaks
+		    $certificate = $certificate.Trim()
+
+			Write-Host "This is out put at index ${index}: $certificate"
+
+			# Save the certificate to a file
+			Set-Content -Path $outputFilePath -Value $certificate
+
+		    # Create a new X509 certificate object from the PEM encoded certificate
+		    $x509Certificate = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2
+		    $x509Certificate.Import($outputFilePath)
+			New-Object System.Security.Cryptography.X509Certificates.X509Certificate2
+			$x509Certificate.Import([System.Text.Encoding]::Unicode.GetBytes($certificate))
+
+		    # Import the certificate to the LocalMachine root certificate store
+		    $store = New-Object System.Security.Cryptography.X509Certificates.X509Store -ArgumentList "Root", "LocalMachine"
+		    $store.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
+		    $store.Add($x509Certificate)
+		    $store.Close()
+
+			$index++;
+			Remove-Item $outputFilePath
+
+		}
+	*/
+	return nc.Windows.EnsureFileContent(contents, TrustedCABundleName, windows.GetRemoteDir())
+}
+
+// // UpdateTrustedCerts reads the trusted CA bundle file and imports each certificate into the node's local trust store.
+// // If a certificate with the same name already exists in the node's local trust store, its content will be overwritten
+// func (nc *nodeConfig) UpdateTrustedCerts() error {
+// 	cmd := fmt.Sprintf("Import-Certificate -FilePath '%s' -CertStoreLocation Cert:\\LocalMachine\\Root",
+// 		windows.GetRemoteDir()+"\\"+TrustedCABundleName)
+// 	if out, err := nc.Windows.Run(cmd, true); err != nil {
+// 		return fmt.Errorf("failed to import certificate bundle with output %s: %w", out, err)
+// 	}
+// 	nc.log.Info("imported new trusted CA bundle")
+// 	return nil
+// }
 
 // generateKubeconfig creates a kubeconfig spec with the certificate and token data from the given secret
 func generateKubeconfig(caCert []byte, token, apiServerURL, username string) clientcmdv1.Config {

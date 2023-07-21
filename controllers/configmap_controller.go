@@ -75,8 +75,6 @@ const (
 	ConfigMapController = "configmap"
 	// wicdRBACResourceName is the name of the resources associated with WICD's RBAC permissions
 	wicdRBACResourceName = "windows-instance-config-daemon"
-	// ProxyCertsConfigMap is the name of the ConfigMap that holds the trusted CA bundle for a cluster-wide proxy
-	ProxyCertsConfigMap = "trusted-ca"
 	// InjectionRequestLabel is used to allow CNO to inject the trusted CA bundle when the global Proxy resource changes
 	InjectionRequestLabel = "config.openshift.io/inject-trusted-cabundle"
 )
@@ -187,7 +185,7 @@ func (r *ConfigMapReconciler) Reconcile(ctx context.Context,
 				return ctrl.Result{}, err
 			}
 		}
-		if req.NamespacedName.Name == ProxyCertsConfigMap {
+		if req.NamespacedName.Name == nodeconfig.ProxyCertsConfigMap {
 			// Create the trusted CA ConfigMap as it is not present
 			return ctrl.Result{}, r.createProxyCertsCM(ctx)
 		}
@@ -202,8 +200,8 @@ func (r *ConfigMapReconciler) Reconcile(ctx context.Context,
 		return ctrl.Result{}, r.reconcileNodes(ctx, configMap)
 	case certificates.KubeAPIServerServingCAConfigMapName:
 		return ctrl.Result{}, r.reconcileKubeletClientCA(ctx, configMap)
-	case ProxyCertsConfigMap:
-		return ctrl.Result{}, r.reconcileProxyCertsCM(ctx, configMap)
+	case nodeconfig.ProxyCertsConfigMap:
+		return ctrl.Result{}, r.reconcileProxyCerts(ctx, configMap)
 	default:
 		// Unexpected configmap, log and return no error so we don't requeue
 		r.log.Error(fmt.Errorf("unexpected resource triggered reconcile"), "ConfigMap", req.NamespacedName)
@@ -435,7 +433,7 @@ func (r *ConfigMapReconciler) SetupWithManager(mgr ctrl.Manager) error {
 func (r *ConfigMapReconciler) isValidConfigMap(o client.Object) bool {
 	return o.GetNamespace() == r.watchNamespace &&
 		(o.GetName() == wiparser.InstanceConfigMap || o.GetName() == servicescm.Name ||
-			(r.proxyEnabled && o.GetName() == ProxyCertsConfigMap))
+			o.GetName() == nodeconfig.ProxyCertsConfigMap) //(r.proxyEnabled && o.GetName() == nodeconfig.ProxyCertsConfigMap))
 }
 
 // createServicesConfigMap creates a valid ServicesConfigMap and returns it
@@ -499,9 +497,9 @@ func (r *ConfigMapReconciler) EnsureServicesConfigMapExists() error {
 
 // createProxyCertsCM creates the trusted CA ConfigMap with the expected spec
 func (r *ConfigMapReconciler) createProxyCertsCM(ctx context.Context) error {
-	trustedCA := &core.ConfigMap{ObjectMeta: meta.ObjectMeta{Name: ProxyCertsConfigMap, Namespace: r.watchNamespace,
+	trustedCA := &core.ConfigMap{ObjectMeta: meta.ObjectMeta{Name: nodeconfig.ProxyCertsConfigMap, Namespace: r.watchNamespace,
 		Labels: map[string]string{InjectionRequestLabel: "true"}}}
-	_, err := r.k8sclientset.CoreV1().ConfigMaps(r.watchNamespace).Create(context.TODO(), trustedCA, meta.CreateOptions{})
+	_, err := r.k8sclientset.CoreV1().ConfigMaps(r.watchNamespace).Create(ctx, trustedCA, meta.CreateOptions{})
 	if err != nil {
 		return err
 	}
@@ -509,9 +507,59 @@ func (r *ConfigMapReconciler) createProxyCertsCM(ctx context.Context) error {
 	return nil
 }
 
-// reconcileProxyCertsCM ensures the trusted CA ConfigMap has the expected injection request. Patches the object if not.
-func (r *ConfigMapReconciler) reconcileProxyCertsCM(ctx context.Context, trustedCA *core.ConfigMap) error {
-	if trustedCA.GetLabels()[InjectionRequestLabel] == "true" {
+// reconcileProxyCerts ensures the trusted CA ConfigMap has the expected injection request,
+// and that Windows nodes have an up-to-date trusted CA bundle
+func (r *ConfigMapReconciler) reconcileProxyCerts(ctx context.Context, trustedCA *core.ConfigMap) error {
+	if err := r.ensureProxyCertsCMIsValid(ctx, trustedCA.GetLabels()[InjectionRequestLabel]); err != nil {
+		return err
+	}
+
+	winNodes, err := r.k8sclientset.CoreV1().Nodes().List(ctx, meta.ListOptions{LabelSelector: nodeconfig.WindowsOSLabel})
+	if err != nil {
+		return fmt.Errorf("error listing nodes: %w", err)
+	}
+	for _, node := range winNodes.Items {
+		winInstance, err := r.instanceFromNode(&node)
+		if err != nil {
+			return fmt.Errorf("error creating instance for node %s: %w", node.Name, err)
+		}
+		nc, err := nodeconfig.NewNodeConfig(r.client, r.k8sclientset, r.clusterServiceCIDR, r.watchNamespace,
+			winInstance, r.signer, nil, nil, r.platform)
+		if err != nil {
+			return fmt.Errorf("error creating nodeConfig for instance %s: %w", winInstance.Address, err)
+		}
+		// copy the new trust bundle
+		if err = nc.EnsureTrustedCABundle([]byte(trustedCA.Data[nodeconfig.TrustedCABundleName])); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+/*
+2023-07-14T16:49:32Z	DEBUG	wc 10.0.143.138	initializing SSH connection
+2023-07-14T16:49:32Z	INFO	controllers.configmap	updating trust bundle file	{"node": "ip-10-0-143-138.us-east-2.compute.internal"}
+2023-07-14T16:49:36Z	DEBUG	wc 10.0.143.138	run	{"cmd": "powershell.exe -NonInteractive -ExecutionPolicy Bypass \"Test-Path C:\\Temp\\kubelet-ca.crt\"", "out": "False\r\n"}
+2023-07-14T16:49:36Z	DEBUG	wc 10.0.143.138	copy	{"file content": "kubelet-ca.crt", "remote dir": "C:\\Temp"}
+2023-07-14T16:49:41Z	DEBUG	wc 10.0.143.138	run	{"cmd": "powershell.exe -NonInteractive -ExecutionPolicy Bypass \"Import-Certificate -FilePath 'C:\\Temp\\kubelet-ca.crt' -CertStoreLocation Cert:\\LocalMachine\\Root\"", "out": "\r\n\r\n   PSParentPath: Microsoft.PowerShell.Security\\Certificate::LocalMachine\\Root\r\n\r\nThumbprint                                Subject                                                                      \r\n----------                                -------                                                                      \r\n93057A8815C64FCE882FFA9116522878BC536417  C=ES, O=ACCV, OU=PKIACCV, CN=ACCVRAIZ1                                       \r\n\r\n\r\n"}
+2023-07-14T16:49:41Z	INFO	nc 10.0.143.138	imported new trusted CA bundle
+2023-07-14T16:49:41Z	INFO	wc 10.0.143.138	rebooting instance
+2023-07-14T16:49:46Z	ERROR	wc 10.0.143.138	error running	{"cmd": "powershell.exe -NonInteractive -ExecutionPolicy Bypass \"Restart-Computer -Force\"", "out": "", "error": "wait: remote command exited without exit status or exit signal"}
+github.com/openshift/windows-machine-config-operator/pkg/windows.(*windows).Run
+	/build/windows-machine-config-operator/pkg/windows/windows.go:386
+github.com/openshift/windows-machine-config-operator/pkg/windows.(*windows).RebootAndReinitialize
+	/build/windows-machine-config-operator/pkg/windows/windows.go:397
+github.com/openshift/windows-machine-config-operator/controllers.(*ConfigMapReconciler).reconcileProxyCerts
+	/build/windows-machine-config-operator/controllers/configmap_controller.go:546
+github.com/openshift/windows-machine-config-operator/controllers.(*ConfigMapReconciler).Reconcile
+	/build/windows-machine-config-operator/controllers/configmap_controller.go:208
+sigs.k8s.io/controller-runtime/pkg/internal/controller.(*Controller).Reconcile
+	/build/windows-machine-config-operator/vendor/sigs.k8s.io/controller-runtime/pkg/internal/controller/controller.go:118
+*/
+
+// ensureProxyCertsCMIsValid ensures the trusted CA ConfigMap has the expected injection request. Patches the object if not.
+func (r *ConfigMapReconciler) ensureProxyCertsCMIsValid(ctx context.Context, injectionRequestVal string) error {
+	if injectionRequestVal == "true" {
 		// ConfigMap exists as expected, nothing to do
 		return nil
 	}
@@ -523,19 +571,20 @@ func (r *ConfigMapReconciler) reconcileProxyCertsCM(ctx context.Context, trusted
 		return fmt.Errorf("unable to generate patch request body for label %s: %w", InjectionRequestLabel, err)
 	}
 
-	if _, err = r.k8sclientset.CoreV1().ConfigMaps(r.watchNamespace).Patch(context.TODO(), ProxyCertsConfigMap,
+	if _, err = r.k8sclientset.CoreV1().ConfigMaps(r.watchNamespace).Patch(context.TODO(), nodeconfig.ProxyCertsConfigMap,
 		kubeTypes.JSONPatchType, patchData, meta.PatchOptions{}); err != nil {
 		return fmt.Errorf("unable to apply patch %s to resource %s/%s: %w", patchData, r.watchNamespace,
-			ProxyCertsConfigMap, err)
+			nodeconfig.ProxyCertsConfigMap, err)
 	}
-	r.log.Info("Patched", "ConfigMap", kubeTypes.NamespacedName{Namespace: trustedCA.Namespace, Name: trustedCA.Name})
+	r.log.Info("Patched", "ConfigMap", kubeTypes.NamespacedName{Namespace: r.watchNamespace, Name: nodeconfig.ProxyCertsConfigMap})
 	return nil
 }
 
 // EnsureTrustedCAConfigMapExists ensures the trusted CA ConfigMap exists as expected.
 // Creates it if it doesn't exist, patches it if it exists with improper spec.
+// 2023-07-14T16:55:50Z	ERROR	setup	error ensuring trusted CA ConfigMap exists	{"namespace": "openshift-windows-machine-config-operator", "error": "error listing nodes: the cache is not started, can not read objects"}
 func (r *ConfigMapReconciler) EnsureTrustedCAConfigMapExists() error {
-	trustedCA, err := r.k8sclientset.CoreV1().ConfigMaps(r.watchNamespace).Get(context.TODO(), ProxyCertsConfigMap,
+	trustedCA, err := r.k8sclientset.CoreV1().ConfigMaps(r.watchNamespace).Get(context.TODO(), nodeconfig.ProxyCertsConfigMap,
 		meta.GetOptions{})
 	if err != nil {
 		if !k8sapierrors.IsNotFound(err) {
@@ -543,7 +592,7 @@ func (r *ConfigMapReconciler) EnsureTrustedCAConfigMapExists() error {
 		}
 		return r.createProxyCertsCM(context.TODO())
 	}
-	return r.reconcileProxyCertsCM(context.TODO(), trustedCA)
+	return r.ensureProxyCertsCMIsValid(context.TODO(), trustedCA.GetLabels()[InjectionRequestLabel])
 }
 
 // EnsureWICDRBAC ensures the WICD RBAC resources exist as expected

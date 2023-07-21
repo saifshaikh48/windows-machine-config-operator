@@ -258,12 +258,12 @@ func main() {
 
 	// If proxy is enabled, disabled, or edited during WMCO runtime, the WMCO pod will be restarted by OLM. This could
 	// happen in the middle of node configuration, at which the controllers will reconcile once the WMCO pod restarts
-	if proxyEnabled {
-		if err := configMapReconciler.EnsureTrustedCAConfigMapExists(); err != nil {
-			setupLog.Error(err, "error ensuring trusted CA ConfigMap exists", "namespace", watchNamespace)
-			os.Exit(1)
-		}
+	//if proxyEnabled {
+	if err := configMapReconciler.EnsureTrustedCAConfigMapExists(); err != nil {
+		setupLog.Error(err, "error ensuring trusted CA ConfigMap exists", "namespace", watchNamespace)
+		os.Exit(1)
 	}
+	//}
 
 	setupLog.Info("starting manager")
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {

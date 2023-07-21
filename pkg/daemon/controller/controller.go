@@ -20,12 +20,18 @@ package controller
 
 import (
 	"context"
+	"crypto/x509"
+	"encoding/pem"
 	"fmt"
+	"io/ioutil"
 	"net"
 	"reflect"
 	"strings"
+	"syscall"
 	"time"
+	"unsafe"
 
+	syswindows "golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/registry"
 	"golang.org/x/sys/windows/svc"
 	"golang.org/x/sys/windows/svc/mgr"
@@ -252,11 +258,22 @@ func (sc *ServiceController) Reconcile(_ context.Context, req ctrl.Request) (res
 		return ctrl.Result{}, err
 	}
 
+	//reconcileProxyCerts
+	// read file contents of TrustedCABundleName = "ca-bundle.crt"
+	// process file and loop over each cert listed inside
+	// import cert, if it does not already exist in on the instance
+	// if any certs needed to be imported, reboot node
+	// Load the certificate file
+	shouldRestart, err := sc.reconcileCerts()
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	//------------
 	awaitingRestart, err := sc.reconcileEnvironmentVariables(cmData.EnvironmentVars, node)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	if awaitingRestart {
+	if awaitingRestart || shouldRestart {
 		// if a restart is required, there is nothing more the controller can do until the instance is rebooted
 		klog.Info("waiting for reboot")
 		return ctrl.Result{}, nil
@@ -274,6 +291,77 @@ func (sc *ServiceController) Reconcile(_ context.Context, req ctrl.Request) (res
 		return ctrl.Result{}, fmt.Errorf("error updating version annotation on node %s: %w", sc.nodeName, err)
 	}
 	return ctrl.Result{}, nil
+}
+
+func (sc *ServiceController) reconcileCerts() (bool, error) {
+	klog.Info("in reconcileCerts")
+	// TODO: make certFile location a command line flag and pass into to WICD controller command through WMCO
+	certFile := "C:\\Temp\\ca-bundle.crt" //windows.GetRemoteDir() + "\\" + nodeconfig.TrustedCABundleName
+	pemData, err := ioutil.ReadFile(certFile)
+	if err != nil {
+		// todo: if the file does not exist, do not error. that implies that no additional certs are in use
+		// either do nothing (for now) or remove all certs that we've added previously (future, WINC-998)
+		klog.Errorf("Failed to read certificate file: %v", err)
+	}
+
+	klog.Infof("read file contents of %s", certFile)
+	// Split the file by certificate blocks
+	certBlocks := splitPEMBlocks(pemData)
+	klog.Info("split PEM data")
+
+	// Open the root certificate store
+	store, err := syswindows.CertOpenStore(syswindows.CERT_STORE_PROV_SYSTEM, 0, 0,
+		syswindows.CERT_SYSTEM_STORE_LOCAL_MACHINE, uintptr(unsafe.Pointer(syscall.StringToUTF16Ptr("ROOT"))))
+	if err != nil {
+		return false, fmt.Errorf("Failed to open root certificate store: %v", err)
+	}
+	defer syswindows.CertCloseStore(store, 0)
+	klog.Info("opened cert store")
+
+	// todo: get all existing certs from system store and loop over them to see if we need to import/set restartRequired
+	index := 0
+	for _, certBlock := range certBlocks {
+		// Decode and parse the certificate
+		cert, err := x509.ParseCertificate(certBlock.Bytes)
+		if err != nil {
+			klog.Errorf("Failed to parse certificate %s: %v\n", cert.Subject.String(), err)
+			continue //TODO: is logging enough here?
+		}
+		// Convert x509 certificate to a Windows CertContent
+		certContext, err := syswindows.CertCreateCertificateContext(
+			syswindows.X509_ASN_ENCODING|syswindows.PKCS_7_ASN_ENCODING, &cert.Raw[0], uint32(len(cert.Raw)))
+		if err != nil {
+			klog.Errorf("Failed to create content from x509 cert %s: %v\n", cert.Subject.String(), err)
+			continue
+		}
+		// Add the certificate to the instances's system-wide trust store
+		err = syswindows.CertAddCertificateContextToStore(store, certContext,
+			syswindows.CERT_STORE_ADD_REPLACE_EXISTING, nil)
+		if err != nil {
+			klog.Errorf("Failed to import certificate %s: %v\n", cert.Subject.String(), err)
+			continue
+		}
+		klog.Infof("Certificate %s imported successfully.", cert.Subject.String())
+		index = index + 1
+	}
+	klog.Infof("processed %d certificates", index)
+
+	//TODO: Apply reboot annotation if restartRequired
+	return false, nil
+}
+
+// splitPEMBlocks extracts individual blocks from PEM data
+func splitPEMBlocks(pemData []byte) []*pem.Block {
+	var blocks []*pem.Block
+	for {
+		block, rest := pem.Decode(pemData)
+		if block == nil {
+			break
+		}
+		blocks = append(blocks, block)
+		pemData = rest
+	}
+	return blocks
 }
 
 // reconcileEnvironmentVariables makes sure that the proxy variables exist as expected, or are safely rectified.
