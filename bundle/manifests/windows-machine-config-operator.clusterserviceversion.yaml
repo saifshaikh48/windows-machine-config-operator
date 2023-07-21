@@ -395,8 +395,8 @@ spec:
                       fieldPath: metadata.name
                 - name: OPERATOR_NAME
                   value: windows-machine-config-operator
-                image: REPLACE_IMAGE
-                imagePullPolicy: IfNotPresent
+                image: quay.io/mohashai/wmco:9.0.0
+                imagePullPolicy: Always
                 name: manager
                 resources: {}
               dnsPolicy: ClusterFirstWithHostNet
