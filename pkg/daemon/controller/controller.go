@@ -22,6 +22,7 @@ import (
 	"context"
 	"crypto/x509"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io/ioutil"
 	"net"
@@ -319,36 +320,50 @@ func (sc *ServiceController) reconcileCerts() (bool, error) {
 	klog.Info("opened cert store")
 
 	// Get all existing from system store
-	var existingSystemCerts []*x509.Certificate
+	var certContext *syswindows.CertContext
+	var existingSystemCerts []*x509.Certificate //TODO: use x509.CertPool?
+	certNum := 0
 	for {
-		certContext, err := syswindows.CertFindCertificateInStore(store,
-			syswindows.X509_ASN_ENCODING|syswindows.PKCS_7_ASN_ENCODING, 0, syswindows.CERT_FIND_ANY, nil, nil)
+		// search for any existing cert
+		// certContext, err := syswindows.CertFindCertificateInStore(store,
+		// 	syswindows.X509_ASN_ENCODING|syswindows.PKCS_7_ASN_ENCODING, 0, syswindows.CERT_FIND_ANY, nil, certContext)
+		certContext, err = syswindows.CertEnumCertificatesInStore(store, certContext)
+		klog.Info("completed call CertEnumCertificatesInStore")
+		if err != nil {
+			if errors.Is(err, syswindows.Errno(syswindows.CRYPT_E_NOT_FOUND)) {
+				// implies we have read all certs
+				break
+			} else {
+				klog.Errorf("Error while reading existing system certificates: %v", err)
+				return false, err
+			}
+		}
 		if certContext == nil {
 			break
 		}
-		if err != nil {
-			// if errno, ok := err.(syswindows.Errno); ok && uintptr(errno) == uintptr(syswindows.CRYPT_E_NOT_FOUND) {
-			// 	break
-			// }
-			klog.Errorf("Failed to find certificate: %v", err)
-		}
-		defer syswindows.CertFreeCertificateContext(certContext)
+		//defer syswindows.CertFreeCertificateContext(certContext)
 
+		certNum++
+		klog.Infof("%d before conversion of certContext to x509.Certificate", certNum)
 		// Convert the certificate bytes to Golang x509.Certificate
-		certBytes := (*[1 << 30]byte)(unsafe.Pointer(certContext.EncodedCert))[:certContext.Length]
-		block := &pem.Block{
-			Type:  "CERTIFICATE",
-			Bytes: certBytes,
-		}
-		pemCert := pem.EncodeToMemory(block)
+		//certBytes := (*[1 << 30]byte)(unsafe.Pointer(certContext.EncodedCert))[:certContext.Length]
+		certBytes := unsafe.Slice(certContext.EncodedCert, certContext.Length)
+		klog.Infof("unsafe slice created. len %d", len(certBytes))
+		buf2 := make([]byte, certContext.Length)
+		copy(buf2, certBytes)
+		klog.Infof("copied into buf2: len %d", len(buf2))
 
-		x509Cert, err := x509.ParseCertificate(pemCert)
+		x509Cert, err := x509.ParseCertificate(buf2)
 		if err != nil {
-			fmt.Println("Failed to parse certificate:", err)
-			continue
+			klog.Errorf("Failed to parse certificate from bytes %s: %v", buf2, err)
+			return false, nil
+			//continue
 		}
+		klog.Infof("x509 cert parsed")
 		existingSystemCerts = append(existingSystemCerts, x509Cert)
+		klog.Infof("Found existing cert %s.", x509Cert.Subject.String())
 	}
+	klog.Infof("found %d existing system certificates", len(existingSystemCerts))
 
 	restartRequired := false
 	imported := 0
@@ -370,9 +385,8 @@ func (sc *ServiceController) reconcileCerts() (bool, error) {
 				continue
 			}
 			// Add the certificate to the instances's system-wide trust store
-			err = syswindows.CertAddCertificateContextToStore(store, certContext,
-				syswindows.CERT_STORE_ADD_REPLACE_EXISTING, nil)
-			if err != nil {
+			if err = syswindows.CertAddCertificateContextToStore(store, certContext,
+				syswindows.CERT_STORE_ADD_REPLACE_EXISTING, nil); err != nil {
 				klog.Errorf("Failed to import certificate %s: %v\n", cert.Subject.String(), err)
 				continue
 			}
