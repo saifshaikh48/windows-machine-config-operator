@@ -109,7 +109,7 @@ func TestResolveNodeVariables(t *testing.T) {
 	}
 	for _, test := range testIO {
 		t.Run(test.name, func(t *testing.T) {
-			c, err := NewServiceController(context.TODO(), test.nodeName, wmcoNamespace, Options{
+			c, err := NewServiceController(context.TODO(), test.nodeName, wmcoNamespace, "", Options{
 				Client: clientfake.NewClientBuilder().WithObjects(&core.Node{
 					ObjectMeta: meta.ObjectMeta{
 						Name:        "node",
@@ -197,7 +197,7 @@ func TestResolvePowershellVariables(t *testing.T) {
 	}
 	for _, test := range testIO {
 		t.Run(test.name, func(t *testing.T) {
-			c, err := NewServiceController(context.TODO(), "", wmcoNamespace, Options{
+			c, err := NewServiceController(context.TODO(), "", wmcoNamespace, "", Options{
 				Client: clientfake.NewClientBuilder().Build(),
 				Mgr:    fake.NewTestMgr(nil),
 				cmdRunner: &fakePSCmdRunner{
@@ -366,7 +366,7 @@ func TestReconcileService(t *testing.T) {
 	}
 	for _, test := range testIO {
 		t.Run(test.name, func(t *testing.T) {
-			c, err := NewServiceController(context.TODO(), "node", wmcoNamespace, Options{
+			c, err := NewServiceController(context.TODO(), "node", wmcoNamespace, "", Options{
 				Client: clientfake.NewClientBuilder().WithObjects(&core.Node{
 					ObjectMeta: meta.ObjectMeta{
 						Name: "node",
@@ -477,7 +477,7 @@ func TestBootstrap(t *testing.T) {
 			clusterObjs := []client.Object{cm}
 
 			winSvcMgr := fake.NewTestMgr(make(map[string]*fake.FakeService))
-			sc, err := NewServiceController(context.TODO(), "", wmcoNamespace, Options{
+			sc, err := NewServiceController(context.TODO(), "", wmcoNamespace, "", Options{
 				Client:    clientfake.NewClientBuilder().WithObjects(clusterObjs...).Build(),
 				Mgr:       winSvcMgr,
 				cmdRunner: &fakePSCmdRunner{},
@@ -680,7 +680,7 @@ func TestReconcile(t *testing.T) {
 			}
 
 			winSvcMgr := fake.NewTestMgr(test.existingServices)
-			c, err := NewServiceController(context.TODO(), "node", wmcoNamespace, Options{
+			c, err := NewServiceController(context.TODO(), "node", wmcoNamespace, "", Options{
 				Client: clientfake.NewClientBuilder().WithObjects(clusterObjs...).Build(),
 				Mgr:    winSvcMgr,
 				cmdRunner: &fakePSCmdRunner{
