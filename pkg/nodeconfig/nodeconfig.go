@@ -27,6 +27,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	crclientcfg "sigs.k8s.io/controller-runtime/pkg/client/config"
 
+	"github.com/openshift/windows-machine-config-operator/pkg/certificates"
 	"github.com/openshift/windows-machine-config-operator/pkg/cluster"
 	"github.com/openshift/windows-machine-config-operator/pkg/ignition"
 	"github.com/openshift/windows-machine-config-operator/pkg/instance"
@@ -148,6 +149,17 @@ func (nc *nodeConfig) Configure() error {
 
 	if err := nc.createBootstrapFiles(); err != nil {
 		return err
+	}
+	if cluster.IsProxyEnabled() {
+		// ensure cert bundle file on instance is populated with up-to-date data
+		trustedCA, err := nc.k8sclientset.CoreV1().ConfigMaps(nc.wmcoNamespace).Get(context.TODO(),
+			certificates.ProxyCertsConfigMap, meta.GetOptions{})
+		if err != nil {
+			return fmt.Errorf("could not get resource %s: %w", certificates.ProxyCertsConfigMap, err)
+		}
+		if err = nc.EnsureTrustedCABundle(trustedCA.Data); err != nil {
+			return err
+		}
 	}
 	wicdKC, err := nc.generateWICDKubeconfig()
 	if err != nil {
@@ -529,6 +541,12 @@ func (nc *nodeConfig) UpdateKubeletClientCA(contents []byte) error {
 		return err
 	}
 	return nil
+}
+
+// EnsureTrustedCABundle updates the file containing the trusted CA bundle in the Windows node, if needed
+func (nc *nodeConfig) EnsureTrustedCABundle(data map[string]string) error {
+	dir, fileName := windows.SplitPath(windows.TrustedCABundlePath)
+	return nc.Windows.EnsureFileContent([]byte(data[certificates.CABundleKey]), fileName, dir)
 }
 
 // generateKubeconfig creates a kubeconfig spec with the certificate and token data from the given secret

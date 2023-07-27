@@ -513,6 +513,26 @@ func (r *ConfigMapReconciler) reconcileProxyCerts(ctx context.Context, trustedCA
 	if err := r.ensureProxyCertsCMIsValid(ctx, trustedCA.GetLabels()[InjectionRequestLabel]); err != nil {
 		return err
 	}
+
+	winNodes, err := r.k8sclientset.CoreV1().Nodes().List(ctx, meta.ListOptions{LabelSelector: nodeconfig.WindowsOSLabel})
+	if err != nil {
+		return fmt.Errorf("error listing nodes: %w", err)
+	}
+	for _, node := range winNodes.Items {
+		winInstance, err := r.instanceFromNode(&node)
+		if err != nil {
+			return fmt.Errorf("error creating instance for node %s: %w", node.Name, err)
+		}
+		nc, err := nodeconfig.NewNodeConfig(r.client, r.k8sclientset, r.clusterServiceCIDR, r.watchNamespace,
+			winInstance, r.signer, nil, nil, r.platform)
+		if err != nil {
+			return fmt.Errorf("error creating nodeConfig for instance %s: %w", winInstance.Address, err)
+		}
+		// copy the new trust bundle
+		if err = nc.EnsureTrustedCABundle(trustedCA.Data); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

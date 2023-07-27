@@ -13,6 +13,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 	ctrl "sigs.k8s.io/controller-runtime"
 
+	"github.com/openshift/windows-machine-config-operator/pkg/cluster"
 	"github.com/openshift/windows-machine-config-operator/pkg/instance"
 	"github.com/openshift/windows-machine-config-operator/pkg/nodeconfig/payload"
 	"github.com/openshift/windows-machine-config-operator/pkg/retry"
@@ -130,6 +131,8 @@ const (
 	containersFeatureName = "Containers"
 	// wicdKubeconfigPath is the path of the kubeconfig used by WICD
 	wicdKubeconfigPath = K8sDir + "\\wicd-kubeconfig"
+	// TrustedCABundlePath is the location of the trusted CA bundle file
+	TrustedCABundlePath = remoteDir + "\\ca-bundle.crt"
 )
 
 var (
@@ -202,6 +205,11 @@ func getFilesToTransfer() (map[*payload.FileInfo]string, error) {
 // GetK8sDir returns the location of the kubernetes executable directory
 func GetK8sDir() string {
 	return K8sDir
+}
+
+// GetRemoteDir returns the location of the remote temporary directory created on the Windows VM
+func GetRemoteDir() string {
+	return remoteDir
 }
 
 // Windows contains all the methods needed to configure a Windows VM to become a worker node
