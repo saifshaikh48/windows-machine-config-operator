@@ -260,31 +260,8 @@ func (sc *ServiceController) Reconcile(_ context.Context, req ctrl.Request) (res
 		return ctrl.Result{}, err
 	}
 
-	shouldRestart, err := reconcileCerts(sc.trustBundle)
-	if err != nil {
+	if err = sc.reconcileProxySettings(cmData.EnvironmentVars, node); err != nil {
 		return ctrl.Result{}, err
-	}
-	if shouldRestart {
-		if err = metadata.ApplyRebootAnnotation(sc.ctx, sc.client, node); err != nil {
-			return ctrl.Result{}, err
-		}
-		klog.Info("waiting for reboot")
-		return ctrl.Result{}, nil
-	} /*else {
-		// TODO: We need to poll/wait for something before removing this
-		if err = metadata.RemoveRebootAnnotation(sc.ctx, sc.client, node); err != nil {
-			return ctrl.Result{}, err
-		}
-	}*/
-
-	awaitingRestart, err := sc.reconcileEnvironmentVariables(cmData.EnvironmentVars, node)
-	if err != nil {
-		return ctrl.Result{}, err
-	}
-	if awaitingRestart {
-		// if a restart is required, there is nothing more the controller can do until the instance is rebooted
-		klog.Info("waiting for reboot")
-		return ctrl.Result{}, nil
 	}
 	// Reconcile state of Windows services with the ConfigMap data
 	if err = sc.reconcileServices(cmData.Services); err != nil {
@@ -301,9 +278,51 @@ func (sc *ServiceController) Reconcile(_ context.Context, req ctrl.Request) (res
 	return ctrl.Result{}, nil
 }
 
-// reconcileCerts ensures the certificates in the given CA bundle file are imported as system certificates.
+// reconcileProxySettings makes sure that the proxy variables and certificates exist as expected or are safely rectified
+func (sc *ServiceController) reconcileProxySettings(envVars map[string]string, node core.Node) error {
+	certsUpdated, err := reconcileTrustedCerts(sc.trustBundle)
+	if err != nil {
+		return err
+	}
+	envVarsUpdated, err := reconcileEnvironmentVariables(envVars)
+	if err != nil {
+		return err
+	}
+	if certsUpdated || envVarsUpdated {
+		// Applying the reboot annotation results in an event picked up by WMCO's node controller to reboot the instance
+		// if a restart is required, there is nothing more the controller can do until the instance is rebooted
+		klog.Info("waiting for reboot")
+		return metadata.ApplyRebootAnnotation(sc.ctx, sc.client, node)
+	}
+	// Wait until the environment variables at the process level are set as expected.
+	// This will only be picked up after WMCO reboots the instance
+	err = wait.PollUntilContextTimeout(sc.ctx, 15*time.Second, 5*time.Minute, true,
+		func(ctx context.Context) (done bool, err error) {
+			stillNeedsReboot := false
+			for _, varName := range cluster.SupportedProxyVars {
+				cmd := fmt.Sprintf("[Environment]::GetEnvironmentVariable('%s', 'Process')", varName)
+				out, err := sc.psCmdRunner.Run(cmd)
+				if err != nil {
+					return false, fmt.Errorf("error running PowerShell command %s with output %s: %w", cmd, out, err)
+				}
+				if strings.TrimSpace(out) != envVars[varName] {
+					stillNeedsReboot = true
+				}
+			}
+			return !stillNeedsReboot, nil
+		})
+	if err != nil {
+		return fmt.Errorf("error waiting for environment vars to get picked up by processes: %w", err)
+	}
+	// TODO: We need to poll/wait for something to ensure certs are available to services (aka instance has rebooted)
+	//       before removing RemoveRebootAnnotation but idk what to look for
+	// Remove the reboot annotation after we know the reboot occurred successfully. No-op if already not present
+	return metadata.RemoveRebootAnnotation(sc.ctx, sc.client, node)
+}
+
+// reconcileTrustedCerts ensures the certificates in the given CA bundle file are imported as system certificates.
 // Returns a boolean whether any certs have needed to be imported
-func reconcileCerts(trustBundle string) (bool, error) {
+func reconcileTrustedCerts(trustBundle string) (bool, error) {
 	if trustBundle == "" {
 		// TODO: ensure that all certs that we've added previously are removed https://issues.redhat.com/browse/WINC-998
 		return false, nil
@@ -411,50 +430,12 @@ func containsCert(storeContents []*x509.Certificate, target *x509.Certificate) b
 	return false
 }
 
-// reconcileEnvironmentVariables makes sure that the proxy variables exist as expected, or are safely rectified.
-// Returns a boolean expressing whether the instance is awaiting a reboot.
-func (sc *ServiceController) reconcileEnvironmentVariables(envVars map[string]string, node core.Node) (bool, error) {
-	restartRequired, err := sc.ensureVarsAreUpToDate(envVars)
-	if err != nil {
-		return false, err
-	}
-	if restartRequired {
-		// Applying the reboot annotation results in an event picked up by WMCO's node controller to reboot the instance
-		if err = metadata.ApplyRebootAnnotation(sc.ctx, sc.client, node); err != nil {
-			return false, fmt.Errorf("error setting reboot annotation on node %s: %w", sc.nodeName, err)
-		}
-		return true, nil
-	}
-	// Wait until the environment variables at the process level are set as expected.
-	// This will only be picked up after WMCO reboots the instance
-	err = wait.PollUntilContextTimeout(sc.ctx, 15*time.Second, 5*time.Minute, true,
-		func(ctx context.Context) (done bool, err error) {
-			stillNeedsReboot := false
-			for _, varName := range cluster.SupportedProxyVars {
-				cmd := fmt.Sprintf("[Environment]::GetEnvironmentVariable('%s', 'Process')", varName)
-				out, err := sc.psCmdRunner.Run(cmd)
-				if err != nil {
-					return false, fmt.Errorf("error running PowerShell command %s with output %s: %w", cmd, out, err)
-				}
-				if strings.TrimSpace(out) != envVars[varName] {
-					stillNeedsReboot = true
-				}
-			}
-			return !stillNeedsReboot, nil
-		})
-	if err != nil {
-		return true, fmt.Errorf("error waiting for environment vars to get picked up by processes: %w", err)
-	}
-	// Remove the reboot annotation after we know the reboot occurred successfully. No-op if already not present
-	return false, metadata.RemoveRebootAnnotation(sc.ctx, sc.client, node)
-}
-
-// ensureVarsAreUpToDate ensures that the proxy environment variables are set as expected on the instance
-// If there's any changes, an instance restart is required to ensure all processes pick up the updated values.
-func (sc *ServiceController) ensureVarsAreUpToDate(envVars map[string]string) (bool, error) {
+// reconcileEnvironmentVariables ensures that the environment variables are set as expected on the instance.
+// Returns a boolean if any variable was added, removed, or its value updated.
+func reconcileEnvironmentVariables(envVars map[string]string) (bool, error) {
 	// systemEnvVarRegistryPath is where system level environment variables are stored in the Windows OS
 	const systemEnvVarRegistryPath = `SYSTEM\CurrentControlSet\Control\Session Manager\Environment`
-	restartRequired := false
+	changeDetected := false
 	for key, expectedVal := range envVars {
 		registryKey, err := registry.OpenKey(registry.LOCAL_MACHINE, systemEnvVarRegistryPath, registry.ALL_ACCESS)
 		if err != nil {
@@ -482,10 +463,10 @@ func (sc *ServiceController) ensureVarsAreUpToDate(envVars map[string]string) (b
 				// Do not log value as proxy information is sensitive
 				return false, fmt.Errorf("unable to set environment variable %s: %w", key, err)
 			}
-			restartRequired = true
+			changeDetected = true
 		}
 	}
-	return restartRequired, nil
+	return changeDetected, nil
 }
 
 // reconcileServices ensures that all the services passed in via the services slice are created, configured properly
