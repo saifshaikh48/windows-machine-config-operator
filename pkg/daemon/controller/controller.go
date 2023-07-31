@@ -20,12 +20,19 @@ package controller
 
 import (
 	"context"
+	"crypto/x509"
+	"encoding/pem"
+	"errors"
 	"fmt"
+	"io/ioutil"
 	"net"
 	"reflect"
 	"strings"
+	"syscall"
 	"time"
+	"unsafe"
 
+	syswindows "golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/registry"
 	"golang.org/x/sys/windows/svc"
 	"golang.org/x/sys/windows/svc/mgr"
@@ -283,14 +290,18 @@ func (sc *ServiceController) Reconcile(_ context.Context, req ctrl.Request) (res
 	return ctrl.Result{}, nil
 }
 
-// reconcileProxySettings makes sure that the proxy variables exist as expected, or are safely rectified.
+// reconcileProxySettings makes sure that the proxy variables and certificates exist as expected, or are safely rectified.
 // Returns a boolean expressing whether the instance is awaiting a reboot.
 func (sc *ServiceController) reconcileProxySettings(envVars map[string]string, node core.Node) (bool, error) {
+	certsUpdated, err := reconcileTrustedCerts(sc.trustBundle)
+	if err != nil {
+		return false, err
+	}
 	envVarsUpdated, err := reconcileEnvironmentVariables(envVars)
 	if err != nil {
 		return false, err
 	}
-	if envVarsUpdated {
+	if certsUpdated || envVarsUpdated {
 		// If there's any changes, an instance restart is required to ensure all processes pick up the updates.
 		// Applying the reboot annotation results in an event picked up by WMCO's node controller to reboot the instance
 		if err = metadata.ApplyRebootAnnotation(sc.ctx, sc.client, node); err != nil {
@@ -319,6 +330,117 @@ func (sc *ServiceController) reconcileProxySettings(envVars map[string]string, n
 		return true, fmt.Errorf("error waiting for environment vars to get picked up by processes: %w", err)
 	}
 	return false, nil
+}
+
+// reconcileTrustedCerts ensures the certificates in the given CA bundle file are imported as system certificates.
+// Returns a boolean whether any certs have needed to be imported
+func reconcileTrustedCerts(trustBundle string) (bool, error) {
+	if trustBundle == "" {
+		// TODO: ensure that all certs that we've added previously are removed https://issues.redhat.com/browse/WINC-998
+		return false, nil
+	}
+	// Read expected certs from CA trust bundle file
+	pemData, err := ioutil.ReadFile(trustBundle)
+	if err != nil {
+		klog.Errorf("Failed to read certificate file: %v", err)
+	}
+	// Split the file by certificate blocks
+	certBlocks := splitPEMBlocks(pemData)
+
+	// Open the root certificate store
+	store, err := syswindows.CertOpenStore(syswindows.CERT_STORE_PROV_SYSTEM, 0, 0,
+		syswindows.CERT_SYSTEM_STORE_LOCAL_MACHINE, uintptr(unsafe.Pointer(syscall.StringToUTF16Ptr("ROOT"))))
+	if err != nil {
+		return false, fmt.Errorf("Failed to open root certificate store: %v", err)
+	}
+	defer syswindows.CertCloseStore(store, 0)
+
+	// Get all existing from system store
+	existingSystemCerts, err := getAllCerts(store)
+	if err != nil {
+		klog.Errorf("Failed to read certificate file: %v", err)
+	}
+
+	certChange := false
+	for _, certBlock := range certBlocks {
+		// Decode and parse the certificate
+		cert, err := x509.ParseCertificate(certBlock.Bytes)
+		if err != nil {
+			klog.Errorf("Failed to parse certificate %s: %v\n", cert.Subject.String(), err)
+			continue
+		}
+		if !containsCert(existingSystemCerts, cert) {
+			// Convert x509 certificate to a Windows CertContent
+			certContext, err := syswindows.CertCreateCertificateContext(
+				syswindows.X509_ASN_ENCODING|syswindows.PKCS_7_ASN_ENCODING, &cert.Raw[0], uint32(len(cert.Raw)))
+			if err != nil {
+				klog.Errorf("Failed to create content from x509 cert %s: %v\n", cert.Subject.String(), err)
+				continue
+			}
+			// Add the certificate to the instances's system-wide trust store
+			if err = syswindows.CertAddCertificateContextToStore(store, certContext,
+				syswindows.CERT_STORE_ADD_REPLACE_EXISTING, nil); err != nil {
+				klog.Errorf("Failed to import certificate %s: %v\n", cert.Subject.String(), err)
+				continue
+			}
+			certChange = true
+			klog.Infof("Certificate %s imported successfully.", cert.Subject.String())
+		}
+	}
+	return certChange, nil
+}
+
+// getAllCerts reads all the certs from the given certificate store
+func getAllCerts(store syswindows.Handle) ([]*x509.Certificate, error) {
+	var existingSystemCerts []*x509.Certificate
+	var certContext *syswindows.CertContext
+	var err error
+	for {
+		certContext, err = syswindows.CertEnumCertificatesInStore(store, certContext)
+		if err != nil {
+			if errors.Is(err, syswindows.Errno(syswindows.CRYPT_E_NOT_FOUND)) {
+				// Error code implies we have read all certs:
+				// https://learn.microsoft.com/en-us/windows/win32/api/wincrypt/nf-wincrypt-certenumcertificatesinstore
+				break
+			}
+			return nil, fmt.Errorf("Error reading existing system certificate: %v", err)
+		}
+
+		// Convert the certificate bytes to Golang x509.Certificate
+		certBytes := unsafe.Slice(certContext.EncodedCert, certContext.Length)
+		x509Cert, err := x509.ParseCertificate(certBytes)
+		if err != nil {
+			klog.Errorf("Failed to parse certificate from bytes %s: %v", certBytes, err)
+			continue
+		}
+		existingSystemCerts = append(existingSystemCerts, x509Cert)
+	}
+	klog.Infof("found %d existing system certificates", len(existingSystemCerts))
+	return existingSystemCerts, nil
+}
+
+// splitPEMBlocks extracts individual blocks from PEM data
+func splitPEMBlocks(pemData []byte) []*pem.Block {
+	var blocks []*pem.Block
+	for {
+		block, rest := pem.Decode(pemData)
+		if block == nil {
+			break
+		}
+		blocks = append(blocks, block)
+		pemData = rest
+	}
+	return blocks
+}
+
+// containsCert checks if the target certificate exists in the given slice
+func containsCert(storeContents []*x509.Certificate, target *x509.Certificate) bool {
+	for _, cert := range storeContents {
+		if cert.Equal(target) {
+			return true
+		}
+	}
+	return false
 }
 
 // reconcileEnvironmentVariables ensures that the proxy environment variables are set as expected on the instance
