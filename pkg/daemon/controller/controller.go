@@ -49,7 +49,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/controller-runtime/pkg/source"
 
-	"github.com/openshift/windows-machine-config-operator/pkg/cluster"
 	"github.com/openshift/windows-machine-config-operator/pkg/daemon/manager"
 	"github.com/openshift/windows-machine-config-operator/pkg/daemon/powershell"
 	"github.com/openshift/windows-machine-config-operator/pkg/daemon/winsvc"
@@ -182,17 +181,19 @@ func NewServiceController(ctx context.Context, nodeName, watchNamespace string, 
 func (sc *ServiceController) SetupWithManager(ctx context.Context, mgr ctrl.Manager) error {
 	nodePredicate := predicate.Funcs{
 		// A node's name will never change, so it is fine to use the name for node identification
-		// The node must have a desired-version annotation for it to be reconcilable
+		// The node must have a desired-version annotation and not be waiting for a reboot for it to be reconcilable
 		CreateFunc: func(e event.CreateEvent) bool {
-			return sc.nodeName == e.Object.GetName() && e.Object.GetAnnotations()[metadata.DesiredVersionAnnotation] != ""
+			return sc.nodeName == e.Object.GetName() && !isAwaitingReboot(e.Object) &&
+				e.Object.GetAnnotations()[metadata.DesiredVersionAnnotation] != ""
 		},
 		UpdateFunc: func(e event.UpdateEvent) bool {
-			// Only process update events if the desired version has changed
-			return sc.nodeName == e.ObjectNew.GetName() &&
+			// Only process update events if the desired version has changed and there is no reboot required
+			return sc.nodeName == e.ObjectNew.GetName() && !isAwaitingReboot(e.ObjectNew) &&
 				e.ObjectOld.GetAnnotations()[metadata.DesiredVersionAnnotation] != e.ObjectNew.GetAnnotations()[metadata.DesiredVersionAnnotation]
 		},
 		GenericFunc: func(e event.GenericEvent) bool {
-			return sc.nodeName == e.Object.GetName() && e.Object.GetAnnotations()[metadata.DesiredVersionAnnotation] != ""
+			return sc.nodeName == e.Object.GetName() && !isAwaitingReboot(e.Object) &&
+				e.Object.GetAnnotations()[metadata.DesiredVersionAnnotation] != ""
 		},
 		DeleteFunc: func(e event.DeleteEvent) bool {
 			return false
@@ -200,6 +201,9 @@ func (sc *ServiceController) SetupWithManager(ctx context.Context, mgr ctrl.Mana
 	}
 	cmPredicate := predicate.NewPredicateFuncs(func(object client.Object) bool {
 		return strings.HasPrefix(object.GetName(), servicescm.NamePrefix)
+	})
+	rebootPredicate := predicate.NewPredicateFuncs(func(object client.Object) bool {
+		return !isAwaitingReboot(object)
 	})
 
 	// Keeping this on the longer side, as each reconciliation requires running each service's powershell scripts
@@ -211,7 +215,8 @@ func (sc *ServiceController) SetupWithManager(ctx context.Context, mgr ctrl.Mana
 		For(&core.Node{}, builder.WithPredicates(nodePredicate)).
 		Watches(&core.ConfigMap{}, handler.EnqueueRequestsFromMapFunc(sc.mapToCurrentNode),
 			builder.WithPredicates(cmPredicate)).
-		WatchesRawSource(&source.Channel{Source: eventChan}, handler.EnqueueRequestsFromMapFunc(sc.mapToCurrentNode)).
+		WatchesRawSource(&source.Channel{Source: eventChan}, handler.EnqueueRequestsFromMapFunc(sc.mapToCurrentNode),
+			builder.WithPredicates(rebootPredicate)).
 		Complete(sc)
 }
 
@@ -252,15 +257,18 @@ func (sc *ServiceController) Reconcile(_ context.Context, req ctrl.Request) (res
 		return ctrl.Result{}, err
 	}
 
-	awaitingRestart, err := sc.reconcileEnvironmentVariables(cmData.EnvironmentVars, node)
+	restartRequired, err := reconcileEnvironmentVariables(cmData.EnvironmentVars)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	if awaitingRestart {
-		// if a restart is required, there is nothing more the controller can do until the instance is rebooted
+	if restartRequired {
+		// If there's any changes, an instance restart is required to ensure all processes pick up the updates.
+		// Applying the reboot annotation results in an event picked up by WMCO's node controller to reboot the instance.
+		// If a restart is required, there is nothing more the controller can do until the instance is rebooted
 		klog.Info("waiting for reboot")
-		return ctrl.Result{}, nil
+		return ctrl.Result{}, metadata.ApplyRebootAnnotation(sc.ctx, sc.client, node)
 	}
+
 	// Reconcile state of Windows services with the ConfigMap data
 	if err = sc.reconcileServices(cmData.Services); err != nil {
 		return ctrl.Result{}, err
@@ -276,50 +284,12 @@ func (sc *ServiceController) Reconcile(_ context.Context, req ctrl.Request) (res
 	return ctrl.Result{}, nil
 }
 
-// reconcileEnvironmentVariables makes sure that the proxy variables exist as expected, or are safely rectified.
-// Returns a boolean expressing whether the instance is awaiting a reboot.
-func (sc *ServiceController) reconcileEnvironmentVariables(envVars map[string]string, node core.Node) (bool, error) {
-	restartRequired, err := sc.ensureVarsAreUpToDate(envVars)
-	if err != nil {
-		return false, err
-	}
-	if restartRequired {
-		// Applying the reboot annotation results in an event picked up by WMCO's node controller to reboot the instance
-		if err = metadata.ApplyRebootAnnotation(sc.ctx, sc.client, node); err != nil {
-			return false, fmt.Errorf("error setting reboot annotation on node %s: %w", sc.nodeName, err)
-		}
-		return true, nil
-	}
-	// Wait until the environment variables at the process level are set as expected.
-	// This will only be picked up after WMCO reboots the instance
-	err = wait.PollUntilContextTimeout(sc.ctx, 15*time.Second, 5*time.Minute, true,
-		func(ctx context.Context) (done bool, err error) {
-			stillNeedsReboot := false
-			for _, varName := range cluster.SupportedProxyVars {
-				cmd := fmt.Sprintf("[Environment]::GetEnvironmentVariable('%s', 'Process')", varName)
-				out, err := sc.psCmdRunner.Run(cmd)
-				if err != nil {
-					return false, fmt.Errorf("error running PowerShell command %s with output %s: %w", cmd, out, err)
-				}
-				if strings.TrimSpace(out) != envVars[varName] {
-					stillNeedsReboot = true
-				}
-			}
-			return !stillNeedsReboot, nil
-		})
-	if err != nil {
-		return true, fmt.Errorf("error waiting for environment vars to get picked up by processes: %w", err)
-	}
-	// Remove the reboot annotation after we know the reboot occurred successfully. No-op if already not present
-	return false, metadata.RemoveRebootAnnotation(sc.ctx, sc.client, node)
-}
-
-// ensureVarsAreUpToDate ensures that the proxy environment variables are set as expected on the instance
-// If there's any changes, an instance restart is required to ensure all processes pick up the updated values.
-func (sc *ServiceController) ensureVarsAreUpToDate(envVars map[string]string) (bool, error) {
+// reconcileEnvironmentVariables ensures that the environment variables are set as expected on the instance.
+// Returns a boolean if any of the environment variables had to be updated.
+func reconcileEnvironmentVariables(envVars map[string]string) (bool, error) {
 	// systemEnvVarRegistryPath is where system level environment variables are stored in the Windows OS
 	const systemEnvVarRegistryPath = `SYSTEM\CurrentControlSet\Control\Session Manager\Environment`
-	restartRequired := false
+	changeDetected := false
 	for key, expectedVal := range envVars {
 		registryKey, err := registry.OpenKey(registry.LOCAL_MACHINE, systemEnvVarRegistryPath, registry.ALL_ACCESS)
 		if err != nil {
@@ -347,10 +317,10 @@ func (sc *ServiceController) ensureVarsAreUpToDate(envVars map[string]string) (b
 				// Do not log value as proxy information is sensitive
 				return false, fmt.Errorf("unable to set environment variable %s: %w", key, err)
 			}
-			restartRequired = true
+			changeDetected = true
 		}
 	}
-	return restartRequired, nil
+	return changeDetected, nil
 }
 
 // reconcileServices ensures that all the services passed in via the services slice are created, configured properly
@@ -651,4 +621,14 @@ func slicesEquivalent(s1, s2 []string) bool {
 	}
 	return reflect.DeepEqual(s1, s2)
 
+}
+
+// isAwaitingReboot returns true if the given object is a node that is awaiting a reboot by WMCO
+func isAwaitingReboot(obj runtime.Object) bool {
+	node, ok := obj.(*core.Node)
+	if !ok {
+		return false
+	}
+	_, exists := node.Annotations[metadata.RebootAnnotation]
+	return exists
 }
