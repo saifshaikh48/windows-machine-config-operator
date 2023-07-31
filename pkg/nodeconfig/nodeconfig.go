@@ -263,8 +263,8 @@ func (nc *nodeConfig) SafeReboot(ctx context.Context) error {
 	if err := nc.Windows.RebootAndReinitialize(); err != nil {
 		return err
 	}
-	// wait for WICD to remove Reboot annotation
-	if err := metadata.WaitForRebootAnnotationRemoval(ctx, nc.client, nc.node.Name); err != nil {
+	// Remove the reboot annotation after we know the reboot occurred successfully
+	if err := metadata.RemoveRebootAnnotation(ctx, nc.client, *nc.node); err != nil {
 		return err
 	}
 
