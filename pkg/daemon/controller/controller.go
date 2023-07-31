@@ -259,7 +259,7 @@ func (sc *ServiceController) Reconcile(_ context.Context, req ctrl.Request) (res
 		return ctrl.Result{}, err
 	}
 
-	awaitingRestart, err := sc.reconcileEnvironmentVariables(cmData.EnvironmentVars, node)
+	awaitingRestart, err := sc.reconcileProxySettings(cmData.EnvironmentVars, node)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -283,14 +283,15 @@ func (sc *ServiceController) Reconcile(_ context.Context, req ctrl.Request) (res
 	return ctrl.Result{}, nil
 }
 
-// reconcileEnvironmentVariables makes sure that the proxy variables exist as expected, or are safely rectified.
+// reconcileProxySettings makes sure that the proxy variables exist as expected, or are safely rectified.
 // Returns a boolean expressing whether the instance is awaiting a reboot.
-func (sc *ServiceController) reconcileEnvironmentVariables(envVars map[string]string, node core.Node) (bool, error) {
-	restartRequired, err := sc.ensureVarsAreUpToDate(envVars)
+func (sc *ServiceController) reconcileProxySettings(envVars map[string]string, node core.Node) (bool, error) {
+	envVarsUpdated, err := reconcileEnvironmentVariables(envVars)
 	if err != nil {
 		return false, err
 	}
-	if restartRequired {
+	if envVarsUpdated {
+		// If there's any changes, an instance restart is required to ensure all processes pick up the updates.
 		// Applying the reboot annotation results in an event picked up by WMCO's node controller to reboot the instance
 		if err = metadata.ApplyRebootAnnotation(sc.ctx, sc.client, node); err != nil {
 			return false, fmt.Errorf("error setting reboot annotation on node %s: %w", sc.nodeName, err)
@@ -320,12 +321,12 @@ func (sc *ServiceController) reconcileEnvironmentVariables(envVars map[string]st
 	return false, nil
 }
 
-// ensureVarsAreUpToDate ensures that the proxy environment variables are set as expected on the instance
-// If there's any changes, an instance restart is required to ensure all processes pick up the updated values.
-func (sc *ServiceController) ensureVarsAreUpToDate(envVars map[string]string) (bool, error) {
+// reconcileEnvironmentVariables ensures that the proxy environment variables are set as expected on the instance
+// Returns a boolean if any variable was added, removed, or its value updated.
+func reconcileEnvironmentVariables(envVars map[string]string) (bool, error) {
 	// systemEnvVarRegistryPath is where system level environment variables are stored in the Windows OS
 	const systemEnvVarRegistryPath = `SYSTEM\CurrentControlSet\Control\Session Manager\Environment`
-	restartRequired := false
+	changeDetected := false
 	for key, expectedVal := range envVars {
 		registryKey, err := registry.OpenKey(registry.LOCAL_MACHINE, systemEnvVarRegistryPath, registry.ALL_ACCESS)
 		if err != nil {
@@ -353,10 +354,10 @@ func (sc *ServiceController) ensureVarsAreUpToDate(envVars map[string]string) (b
 				// Do not log value as proxy information is sensitive
 				return false, fmt.Errorf("unable to set environment variable %s: %w", key, err)
 			}
-			restartRequired = true
+			changeDetected = true
 		}
 	}
-	return restartRequired, nil
+	return changeDetected, nil
 }
 
 // reconcileServices ensures that all the services passed in via the services slice are created, configured properly
