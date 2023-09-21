@@ -283,7 +283,7 @@ Example command to run the full test suite with 2 instances configured by the Wi
 configured by the ConfigMap controller, skipping the deletion of all the nodes.
 
 ```shell script
-hack/run-ci-e2e-test.sh -s -m 2 -c 1
+hack/run-ci-e2e-test.sh -s -m 1 -c 1 -t basic
 ```
 
 ### Running e2e tests on platform-agnostic infrastructure

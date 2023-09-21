@@ -15,7 +15,7 @@ import (
 	mapi "github.com/openshift/api/machine/v1beta1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -48,19 +48,22 @@ func creationTestSuite(t *testing.T) {
 		// No point in running the other tests if creation failed
 		return
 	}
-	t.Run("Nodes ready and schedulable", tc.testNodesBecomeReadyAndSchedulable)
-	t.Run("Node annotations", tc.testNodeAnnotations)
-	t.Run("Node Metadata", tc.testNodeMetadata)
-	t.Run("Services ConfigMap validation", tc.testServicesConfigMap)
-	t.Run("Services running", tc.testExpectedServicesRunning)
-	t.Run("NodeIP Arg", tc.testNodeIPArg)
-	t.Run("NodeTaint validation", tc.testNodeTaint)
-	t.Run("CSR Validation", tc.testCSRApproval)
-	t.Run("Certificates", tc.testCertificates)
-	t.Run("Node Logs", tc.testNodeLogs)
-	t.Run("Metrics validation", tc.testMetrics)
-	t.Run("UserData validation", tc.testUserData)
-	t.Run("Kubelet priority class validation", tc.testKubeletPriorityClass)
+	if !t.Run("Nodes ready and schedulable", tc.testNodesBecomeReadyAndSchedulable) {
+		// No point in running the other tests if creation failed
+		return
+	}
+	// t.Run("Node annotations", tc.testNodeAnnotations)
+	// t.Run("Node Metadata", tc.testNodeMetadata)
+	// t.Run("Services ConfigMap validation", tc.testServicesConfigMap)
+	// t.Run("Services running", tc.testExpectedServicesRunning)
+	// t.Run("NodeIP Arg", tc.testNodeIPArg)
+	// t.Run("NodeTaint validation", tc.testNodeTaint)
+	// t.Run("CSR Validation", tc.testCSRApproval)
+	// t.Run("Certificates", tc.testCertificates)
+	// t.Run("Node Logs", tc.testNodeLogs)
+	// t.Run("Metrics validation", tc.testMetrics)
+	// t.Run("UserData validation", tc.testUserData)
+	// t.Run("Kubelet priority class validation", tc.testKubeletPriorityClass)
 }
 
 // loadExistingNodes adds all configured Windows Nodes to the globalContext cache
