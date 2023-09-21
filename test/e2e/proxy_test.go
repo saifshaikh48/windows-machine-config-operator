@@ -1,8 +1,10 @@
 package e2e
 
 import (
+	"bufio"
+	"bytes"
 	"context"
-	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"strconv"
@@ -37,9 +39,9 @@ func proxyTestSuite(t *testing.T) {
 	// Enables proxy test suite to be run individually on existing Windows nodes
 	require.NoError(t, tc.loadExistingNodes())
 
-	t.Run("Trusted CA ConfigMap validation", tc.testTrustedCAConfigMap)
-	t.Run("Environment variables validation", tc.testEnvVars)
+	 t.Run("Trusted CA ConfigMap validation", tc.testTrustedCAConfigMap)
 	t.Run("Certificate validation", tc.testCerts)
+	t.Run("Environment variables validation", tc.testEnvVars)
 }
 
 // testCerts tests that any additional certificates from the proxy's trusted bundle are imported by each node
@@ -48,30 +50,42 @@ func (tc *testContext) testCerts(t *testing.T) {
 		certificates.ProxyCertsConfigMap, meta.GetOptions{})
 	require.NoErrorf(t, err, "error getting trusted CA ConfigMap: %w", err)
 
-	// Read all certs from CM data
+	// Read certs from CM data
 	trustedCABundle := cm.Data[certificates.CABundleKey]
 	assert.Greater(t, len(trustedCABundle), 0, "no additional user-provided certs in bundle")
 
-	certs := x509.NewCertPool()
-	require.True(t, certs.AppendCertsFromPEM([]byte(trustedCABundle)), "unable to parse certs from trusted CA ConfigMap data")
-	subjects := certs.Subjects()
-	// Ensure each cert has been imported into every Windows instance's system store
 	for _, node := range gc.allNodes() {
 		t.Run(node.GetName(), func(t *testing.T) {
+			// Read in one cert at a time and test it exists in the Windows instance's system store
+			scanner := bufio.NewScanner(strings.NewReader(trustedCABundle))
+			scanner.Split(splitAtPEMCert())
+
 			addr, err := controllers.GetAddress(node.Status.Addresses)
 			require.NoError(t, err, "unable to get node address")
 
-			for i, subjectBytes := range subjects {
-				command := fmt.Sprintf("(Get-ChildItem -Path Cert:\\LocalMachine\\Root | "+
-					"Where-Object {$_.Subject -eq '%s'}).Count", string(subjectBytes))
-				out, err := tc.runPowerShellSSHJob(fmt.Sprintf("get-cert-%d", i), command, addr)
+			i := 0
+			for scanner.Scan() {
+				// Multi-line certificate data causes issues in the command. Encode to base64 as a workaround
+				expectedCertBase64 := base64.StdEncoding.EncodeToString([]byte(scanner.Text()))
+				commandToRun := fmt.Sprintf("$base64Data=\\\"%s\\\";"+
+					// Decode base64 into cert's actual string data
+					"$certString=[Text.Encoding]::Utf8.GetString([Convert]::FromBase64String($base64Data));"+
+					// Create a Powershell certificate object with the expected cert.
+					// First requires data to be written to a file and then provide the file path the cert constructor
+					"Set-Content C:\\Temp\\cert.pem $certString;"+
+					"$expectedCert=[System.Security.Cryptography.X509Certificates.X509Certificate2]::new(\\\"C:\\Temp\\cert.pem\\\");"+
+					// Get the number of existing certs equivalent to the expected cert
+					"(Get-ChildItem -Path Cert:\\LocalMachine\\Root | Where-Object {$expectedCert.Equals($_)}).Count",
+					expectedCertBase64)
+				out, err := tc.runPowerShellSSHJob(fmt.Sprintf("get-cert-%d", i), commandToRun, addr)
 				if err != nil {
 					require.NoError(t, err, "error running SSH job: %w", err)
 				}
-				count, err := strconv.Atoi(strings.TrimSpace(out))
+				count, err := strconv.Atoi(finalLine(out))
 				require.NoError(t, err)
 
-				assert.Greaterf(t, count, 0, "unable to find certificate %s in node %s system store", subjectBytes, node)
+				assert.Equalf(t, count, 1, "unexpected cert %d count on node %s: expected 1, found %d", i, node, count)
+				i++
 			}
 		})
 	}
@@ -279,4 +293,29 @@ func parseWindowsEnvVars(pwshOutput string) map[string]string {
 		}
 	}
 	return proxyEnvVars
+}
+
+// splitAtPEMCert is a custom closure function to split data into complete PEM-encoded certificates
+func splitAtPEMCert() func(data []byte, atEOF bool) (advance int, token []byte, err error) {
+	const endCertTag = "-----END CERTIFICATE-----"
+	searchBytes := []byte(endCertTag)
+	searchLen := len(searchBytes)
+	return func(data []byte, atEOF bool) (advance int, token []byte, err error) {
+		dataLen := len(data)
+		if atEOF && dataLen == 0 {
+			// Empty file, do nothing
+			return 0, nil, nil
+		}
+
+		// Find next separator and return the token
+		if i := bytes.Index(data, searchBytes); i >= 0 {
+			return i + searchLen, data[0 : i+searchLen], nil
+		}
+
+		if atEOF {
+			return dataLen, data, fmt.Errorf("Hit end of file without finding terminating separator %s", endCertTag)
+		}
+		// Otherwise, continue reading file data
+		return 0, nil, nil
+	}
 }
