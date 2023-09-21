@@ -2,11 +2,9 @@ package e2e
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"encoding/pem"
 	"fmt"
 	"strconv"
 	"strings"
@@ -23,6 +21,7 @@ import (
 	"github.com/openshift/windows-machine-config-operator/controllers"
 	"github.com/openshift/windows-machine-config-operator/pkg/certificates"
 	"github.com/openshift/windows-machine-config-operator/pkg/cluster"
+	"github.com/openshift/windows-machine-config-operator/pkg/daemon/certs"
 	"github.com/openshift/windows-machine-config-operator/pkg/patch"
 	"github.com/openshift/windows-machine-config-operator/pkg/retry"
 	"github.com/openshift/windows-machine-config-operator/pkg/windows"
@@ -56,16 +55,7 @@ func (tc *testContext) testCerts(t *testing.T) {
 	assert.Greater(t, len(trustedCABundle), 0, "no additional user-provided certs in bundle")
 
 	scanner := bufio.NewScanner(strings.NewReader(trustedCABundle))
-	scanner.Split(splitAtPEMCert())
-
-	// var certs []*x509.Certificate
-	// certBlocks := splitPEMBlocks([]byte(trustedCABundle))
-	// for _, certBlock := range certBlocks {
-	// 	// Decode and parse the certificate
-	// 	cert, err := x509.ParseCertificate(certBlock.Bytes)
-	// 	require.NoErrorf(t, err, "error parsing cert from %s CM data: %w", certificates.ProxyCertsConfigMap, err)
-	// 	certs = append(certs, cert)
-	// }
+	scanner.Split(certs.SplitAtPEMCert())
 
 	// Ensure each cert has been imported into every Windows instance's system store
 	for _, node := range gc.allNodes() {
@@ -75,30 +65,16 @@ func (tc *testContext) testCerts(t *testing.T) {
 
 			i := 0
 			for scanner.Scan() {
-				// for i, cert := range certs {
-
-				// var subject pkix.RDNSequence
-				// if _, err := asn1.Unmarshal(cert.RawSubject, &subject); err != nil {
-				// 	return err
-				// }
-
 				commandToRun := fmt.Sprintf("$data=\\\"%s\\\"", base64.StdEncoding.EncodeToString([]byte(scanner.Text())))
 				commandToRun = fmt.Sprintf("%s; $b64data=[Text.Encoding]::Utf8.GetString([Convert]::FromBase64String($data))", commandToRun)
 				commandToRun = fmt.Sprintf("%s; Set-Content C:\\Temp\\cert%d.pem $b64data", commandToRun, i)
 				commandToRun = fmt.Sprintf("%s; $cert%d=[System.Security.Cryptography.X509Certificates.X509Certificate2]::new(\\\"C:\\Temp\\cert%d.pem\\\")", commandToRun, i, i)
 				commandToRun = fmt.Sprintf("%s; (Get-ChildItem -Path Cert:\\LocalMachine\\Root |"+" Where-Object {$_.Subject -eq $cert%d.Subject}).Count", commandToRun, i)
 
-				//formattedName := strings.ReplaceAll(cert.Subject.ToRDNSequence().String(), ",", ", ")
-				//command := fmt.Sprintf("(Get-ChildItem -Path Cert:\\LocalMachine\\Root | "+ "Where-Object {$_.GetName() -eq \\\"%s\\\"}).Count", cert.Subject)
-				//fmt.Println(commandToRun)
 				out, err := tc.runPowerShellSSHJob(fmt.Sprintf("get-cert-%d", i), commandToRun, addr)
-
-				//fmt.Printf("\nNEW JOB OUTPUT: %s\n", out)
 				if err != nil {
-					//fmt.Printf("\nERROR MESSAGE: %s\n", err.Error())
 					require.NoError(t, err, "error running SSH job: %w", err)
 				}
-				//require.Truef(t, finalLine(out) == "True", "not equal")
 
 				count, err := strconv.Atoi(finalLine(out))
 				require.NoError(t, err)
@@ -109,100 +85,6 @@ func (tc *testContext) testCerts(t *testing.T) {
 		})
 	}
 }
-
-//ssh -i openshift-dev.pem Administrator@ip-10-0-0-116.us-east-2.compute.internal
-//commandToRun := fmt.Sprintf("$data='HELLO'") failed
-//commandToRun := fmt.Sprintf("$data=''HELLO''") worked
-//commandToRun := fmt.Sprintf("$data=\"HELLO\"") worked
-//commandToRun := fmt.Sprintf("$data=HELLO") worked
-
-/*
-1. import cert into powershell object then compare with what is in system store
-2. construct Subject as powershell expects
-e.g.
-CN=Entrust Root Certification Authority, OU="(c) 2006 Entrust, Inc.", OU=www.entrust.net/CPS is incorporated by reference, O="Entrust, Inc.", C=US
-CN=COMODO RSA Certification Authority, O=COMODO CA Limited, L=Salford, S=Greater Manchester, C=GB
-E=info@e-szigno.hu, CN=Microsec e-Szigno Root CA 2009, O=Microsec Ltd., L=Budapest, C=HU
-CN=SSL.com EV Root Certification Authority RSA R2, O=SSL Corporation, L=Houston, S=Texas, C=US
-CN=Go Daddy Root Certificate Authority - G2, O="GoDaddy.com, Inc.", L=Scottsdale, S=Arizona, C=US
-CN=Trustwave Global Certification Authority, O="Trustwave Holdings, Inc.", L=Chicago, S=Illinois, C=US
-OU=Copyright (c) 1997 Microsoft Corp., OU=Microsoft Time Stamping Service Root, OU=Microsoft Corporation, O=Microsoft Trust Network
-
-
-*/
-
-// if ssh -o StrictHostKeyChecking=no -i openshift-dev.pem Administrator@10.0.24.111 'Get-Help';
-// 	then CMD_PREFIX="";
-// 	CMD_SUFFIX="";
-// 	COMMAND='{(Get-ChildItem -Path Cert:\LocalMachine\Root | Where-Object {$_.Subject -eq ""CN=ACCVRAIZ1,OU=PKIACCV,O=ACCV,C=ES""}).Count}';
-// else CMD_PREFIX="powershell.exe -NonInteractive -ExecutionPolicy Bypass -Command  \"";
-// 	CMD_SUFFIX="\"";
-// 	COMMAND='{(Get-ChildItem -Path Cert:\LocalMachine\Root | Where-Object {$_.Subject -eq ""CN=ACCVRAIZ1,OU=PKIACCV,O=ACCV,C=ES""}).Count}';
-// fi;
-// ssh -o StrictHostKeyChecking=no -i openshift-dev.pem Administrator@10.0.24.111 ${CMD_PREFIX}" & $COMMAND "${CMD_SUFFIX}
-
-// ssh -o StrictHostKeyChecking=no -i openshift-dev.pem Administrator@10.0.24.111 " & $COMMAND "
-// ssh -o StrictHostKeyChecking=no -i openshift-dev.pem Administrator@10.0.24.111 powershell.exe -NonInteractive -ExecutionPolicy Bypass -Command  "" & {(Get-ChildItem -Path Cert:\LocalMachine\Root | Where-Object {$_.Subject -eq 'CN=ACCVRAIZ1,OU=PKIACCV,O=ACCV,C=ES'}).Count} ""
-
-// powershell.exe -NonInteractive -ExecutionPolicy Bypass -Command  "" & {(Get-ChildItem -Path Cert:\LocalMachine\Root | Where-Object {$_.Subject -eq 'CN=ACCVRAIZ1,OU=PKIACCV,O=ACCV,C=ES'}).Count} ""
-// " & {(Get-ChildItem -Path Cert:\LocalMachine\Root | Where-Object {$_.Subject -eq 'CN=ACCVRAIZ1,OU=PKIACCV,O=ACCV,C=ES'}).Count} "
-
-// splitPEMBlocks extracts individual blocks from PEM data
-func splitPEMBlocks(pemData []byte) []*pem.Block {
-	var blocks []*pem.Block
-	for {
-		block, rest := pem.Decode(pemData)
-		if block == nil {
-			break
-		}
-		blocks = append(blocks, block)
-		pemData = rest
-	}
-	return blocks
-}
-
-// splitAtPEMCert is a custom closure function to split data into complete PEM-encoded certificates
-func splitAtPEMCert() func(data []byte, atEOF bool) (advance int, token []byte, err error) {
-	const endCertTag = "-----END CERTIFICATE-----"
-	searchBytes := []byte(endCertTag)
-	searchLen := len(searchBytes)
-	return func(data []byte, atEOF bool) (advance int, token []byte, err error) {
-		dataLen := len(data)
-		if atEOF && dataLen == 0 {
-			// Empty file, do nothing
-			return 0, nil, nil
-		}
-
-		// Find next separator and return the token
-		if i := bytes.Index(data, searchBytes); i >= 0 {
-			return i + searchLen, data[0 : i+searchLen], nil
-		}
-
-		if atEOF {
-			return dataLen, data, fmt.Errorf("Hit end of file without finding terminating separator %s", endCertTag)
-		}
-		// Otherwise, continue reading file data
-		return 0, nil, nil
-	}
-}
-
-/*
-get-cert-0-job-65sj9-fhl5r: Could not create directory '/.ssh'.
-Failed to add the host to the list of known hosts (/.ssh/known_hosts).
-'Get-Help' is not recognized as an internal or external command,
-operable program or batch file.
-bash: line 1: $'ACCVRAIZ11\0200\016\006\003U\004\v\f\aPKIACCV1\r0\v\006\003U\004': command not found
-bash: line 2: $'\f\004ACCV1\v0': command not found
-Could not create directory '/.ssh'.
-Failed to add the host to the list of known hosts (/.ssh/known_hosts).
-At line:1 char:2
-+  &
-+  ~
-Missing expression after '&' in pipeline element.
-    + CategoryInfo          : ParserError: (:) [], ParentContainsErrorRecordException
-    + FullyQualifiedErrorId : MissingExpression
-
-*/
 
 // testEnvVars tests that on each node
 // 1. the system-level environment variables are set properly as per the cluster-wide proxy

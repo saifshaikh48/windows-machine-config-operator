@@ -62,7 +62,7 @@ func readCertsFromFile(path string) ([]*x509.Certificate, error) {
 
 	// Process the file one certificate at a time
 	scanner := bufio.NewScanner(f)
-	scanner.Split(splitAtPEMCert())
+	scanner.Split(SplitAtPEMCert())
 	var certs []*x509.Certificate
 	for scanner.Scan() {
 		// Read next token
@@ -81,8 +81,8 @@ func readCertsFromFile(path string) ([]*x509.Certificate, error) {
 	return certs, nil
 }
 
-// splitAtPEMCert is a custom closure function to split data into complete PEM-encoded certificates
-func splitAtPEMCert() func(data []byte, atEOF bool) (advance int, token []byte, err error) {
+// SplitAtPEMCert is a custom closure function to split data into complete PEM-encoded certificates
+func SplitAtPEMCert() func(data []byte, atEOF bool) (advance int, token []byte, err error) {
 	const endCertTag = "-----END CERTIFICATE-----"
 	searchBytes := []byte(endCertTag)
 	searchLen := len(searchBytes)
