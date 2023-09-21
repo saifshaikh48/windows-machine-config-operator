@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
@@ -81,14 +82,15 @@ func (tc *testContext) testCerts(t *testing.T) {
 				// 	return err
 				// }
 
-				commandToRun := fmt.Sprintf("$data=''%s''", scanner.Text())
-				// commandToRun = fmt.Sprintf("%s; Set-Content C:\\Temp\\cert%d.pem $data", commandToRun, i)
-				// commandToRun = fmt.Sprintf("%s; $cert%d=[System.Security.Cryptography.X509Certificates.X509Certificate2]::new(\\\"C:\\Temp\\cert%d.pem\\\")", commandToRun, i, i)
-				// commandToRun = fmt.Sprintf("%s; (Get-ChildItem -Path Cert:\\LocalMachine\\Root |"+ " Where-Object {$_.Subject -eq $cert%d.Subject}).Count", commandToRun, i)
+				commandToRun := fmt.Sprintf("$data=\\\"%s\\\"", base64.StdEncoding.EncodeToString([]byte(scanner.Text())))
+				commandToRun = fmt.Sprintf("%s; $b64data=[Text.Encoding]::Utf8.GetString([Convert]::FromBase64String($data))", commandToRun)
+				commandToRun = fmt.Sprintf("%s; Set-Content C:\\Temp\\cert%d.pem $b64data", commandToRun, i)
+				commandToRun = fmt.Sprintf("%s; $cert%d=[System.Security.Cryptography.X509Certificates.X509Certificate2]::new(\\\"C:\\Temp\\cert%d.pem\\\")", commandToRun, i, i)
+				commandToRun = fmt.Sprintf("%s; (Get-ChildItem -Path Cert:\\LocalMachine\\Root |"+" Where-Object {$_.Subject -eq $cert%d.Subject}).Count", commandToRun, i)
 
 				//formattedName := strings.ReplaceAll(cert.Subject.ToRDNSequence().String(), ",", ", ")
 				//command := fmt.Sprintf("(Get-ChildItem -Path Cert:\\LocalMachine\\Root | "+ "Where-Object {$_.GetName() -eq \\\"%s\\\"}).Count", cert.Subject)
-				fmt.Println(commandToRun)
+				//fmt.Println(commandToRun)
 				out, err := tc.runPowerShellSSHJob(fmt.Sprintf("get-cert-%d", i), commandToRun, addr)
 
 				//fmt.Printf("\nNEW JOB OUTPUT: %s\n", out)
@@ -108,6 +110,7 @@ func (tc *testContext) testCerts(t *testing.T) {
 	}
 }
 
+//ssh -i openshift-dev.pem Administrator@ip-10-0-0-116.us-east-2.compute.internal
 //commandToRun := fmt.Sprintf("$data='HELLO'") failed
 //commandToRun := fmt.Sprintf("$data=''HELLO''") worked
 //commandToRun := fmt.Sprintf("$data=\"HELLO\"") worked

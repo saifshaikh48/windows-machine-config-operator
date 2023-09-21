@@ -154,7 +154,7 @@ fi
 
 if [[ "$TEST" = "all" || "$TEST" = "basic" ]]; then
   printf "\n####### Testing cluster-wide proxy #######\n" >> "$ARTIFACT_DIR"/wmco.log
-  go test ./test/e2e/... -run=TestWMCO/cluster-wide_proxy -v -timeout=10m -args $GO_TEST_ARGS
+  go test ./test/e2e/... -run=TestWMCO/cluster-wide_proxy -v -timeout=20m -args $GO_TEST_ARGS
   printf "\n####### Testing network #######\n" >> "$ARTIFACT_DIR"/wmco.log
   go test ./test/e2e/... -run=TestWMCO/network -v -timeout=20m -args $GO_TEST_ARGS
   printf "\n####### Testing storage #######\n" >> "$ARTIFACT_DIR"/wmco.log
