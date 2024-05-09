@@ -18,7 +18,7 @@ func TestGenerateConfig(t *testing.T) {
 			input: mirrorSet{
 				source: "registry.access.redhat.com/ubi9/ubi-minimal",
 				mirrors: []mirror{
-					{"example.io/example/ubi-minimal", false},
+					{host: "example.io/example/ubi-minimal", resolveTags: false},
 				},
 				mirrorSourcePolicy: config.AllowContactingSource,
 			},
@@ -29,7 +29,7 @@ func TestGenerateConfig(t *testing.T) {
 			input: mirrorSet{
 				source: "registry.access.redhat.com/ubi9/ubi-minimal",
 				mirrors: []mirror{
-					{"example.io/example/ubi-minimal", true},
+					{host: "example.io/example/ubi-minimal", resolveTags: true},
 				},
 				mirrorSourcePolicy: config.AllowContactingSource,
 			},
@@ -40,35 +40,48 @@ func TestGenerateConfig(t *testing.T) {
 			input: mirrorSet{
 				source: "registry.access.redhat.com/ubi9/ubi-minimal",
 				mirrors: []mirror{
-					{"example.io/example/ubi-minimal", false},
+					{host: "example.io/example/ubi-minimal", resolveTags: false},
 				},
 				mirrorSourcePolicy: config.NeverContactSource,
 			},
-			expectedOutput: "[host.\"https://example.io/example/ubi-minimal\"]\r\n  capabilities = [\"pull\"]\r\n",
+			expectedOutput: "server = \"https://example.io/example/ubi-minimal\"\r\n\r\n[host.\"https://example.io/example/ubi-minimal\"]\r\n  capabilities = [\"pull\"]\r\n",
 		},
 		{
-			name: "one tag mirror never contact source",
+			name: "tags mirror never contact source",
 			input: mirrorSet{
 				source: "registry.access.redhat.com/ubi9/ubi-minimal",
 				mirrors: []mirror{
-					{"example.io/example/ubi-minimal", true},
+					{host: "example.io/example/ubi-minimal", resolveTags: true},
 				},
 				mirrorSourcePolicy: config.NeverContactSource,
 			},
-			expectedOutput: "[host.\"https://example.io/example/ubi-minimal\"]\r\n  capabilities = [\"pull\", \"resolve\"]\r\n",
+			expectedOutput: "server = \"https://example.io/example/ubi-minimal\"\r\n\r\n[host.\"https://example.io/example/ubi-minimal\"]\r\n  capabilities = [\"pull\", \"resolve\"]\r\n",
 		},
 		{
 			name: "multiple mirrors",
 			input: mirrorSet{
 				source: "registry.access.redhat.com/ubi9/ubi-minimal",
 				mirrors: []mirror{
-					{"example.io/example/ubi-minimal", false},
-					{"mirror.example.com/redhat", false},
-					{"mirror.example.net/image", true},
+					{host: "example.io/example/ubi-minimal", resolveTags: false},
+					{host: "mirror.example.com/redhat", resolveTags: false},
+					{host: "mirror.example.net/image", resolveTags: true},
 				},
 				mirrorSourcePolicy: config.AllowContactingSource,
 			},
 			expectedOutput: "server = \"https://registry.access.redhat.com/ubi9/ubi-minimal\"\r\n\r\n[host.\"https://example.io/example/ubi-minimal\"]\r\n  capabilities = [\"pull\"]\r\n[host.\"https://mirror.example.com/redhat\"]\r\n  capabilities = [\"pull\"]\r\n[host.\"https://mirror.example.net/image\"]\r\n  capabilities = [\"pull\", \"resolve\"]\r\n",
+		},
+		{
+			name: "multiple mirrors never contact source",
+			input: mirrorSet{
+				source: "registry.access.redhat.com/ubi9/ubi-minimal",
+				mirrors: []mirror{
+					{host: "example.io/example/ubi-minimal", resolveTags: false},
+					{host: "mirror.example.com/redhat", resolveTags: false},
+					{host: "mirror.example.net/image", resolveTags: true},
+				},
+				mirrorSourcePolicy: config.NeverContactSource,
+			},
+			expectedOutput: "server = \"https://example.io/example/ubi-minimal\"\r\n\r\n[host.\"https://example.io/example/ubi-minimal\"]\r\n  capabilities = [\"pull\"]\r\n[host.\"https://mirror.example.com/redhat\"]\r\n  capabilities = [\"pull\"]\r\n[host.\"https://mirror.example.net/image\"]\r\n  capabilities = [\"pull\", \"resolve\"]\r\n",
 		},
 	}
 
