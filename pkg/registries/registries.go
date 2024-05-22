@@ -2,12 +2,17 @@ package registries
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
 
 	config "github.com/openshift/api/config/v1"
+	core "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	"github.com/openshift/windows-machine-config-operator/pkg/windows"
 )
 
 // mirror represents a mirrored image repo entry in a registry configuration file
@@ -178,7 +183,7 @@ func mergeMirrors(existingMirrors, newMirrors []mirror) []mirror {
 
 // generateConfig is a serialization method that generates a valid TOML representation from a mirrorSet object.
 // Results in content usable as a containerd image registry configuration file. Returns empty string if no mirrors exist
-func (ms *mirrorSet) generateConfig() string {
+func (ms *mirrorSet) generateConfig(token string) string {
 	result := ""
 	if len(ms.mirrors) == 0 {
 		return result
@@ -207,6 +212,14 @@ func (ms *mirrorSet) generateConfig() string {
 		}
 		result += hostCapabilities
 		result += "\r\n"
+
+		result += fmt.Sprintf("  ca = \"%s\"", strings.ReplaceAll(windows.TrustedCABundlePath, "\\", "\\\\"))
+		result += "\r\n"
+
+		result += fmt.Sprintf("  [host.\"https://%s\".header]", m.host)
+		result += "\r\n"
+		result += fmt.Sprintf("    authorization = \"Basic %s\"", token)
+		result += "\r\n"
 	}
 
 	return result
@@ -226,12 +239,37 @@ func GenerateConfigFiles(ctx context.Context, c client.Client) (map[string][]byt
 
 	registryConf := getMirrorSets(imageDigestMirrorSetList.Items, imageTagMirrorSetList.Items)
 
+	pullSecret := &core.Secret{}
+	err := c.Get(context.TODO(), types.NamespacedName{Namespace: "openshift-config", Name: "pull-secret"}, pullSecret)
+	if err != nil {
+		return nil, fmt.Errorf("error getting pull secret: %w", err)
+	}
+
+	var config DockerConfigJSON
+	// no need to decode data
+	err = json.Unmarshal(pullSecret.Data[".dockerconfigjson"], &config)
+	if err != nil {
+		return nil, fmt.Errorf("error unmarshalling to DockerConfigJSON: %w", err)
+	}
+
+	// Convert the map of maps into a flat map of URL to auth token
+	authList := []string{}
+	for _, authDetails := range config.Auths {
+		authToken := authDetails["auth"]
+		authList = append(authList, authToken)
+	}
+
 	// configFiles is a map from file path on the Windows node to the file content
 	configFiles := make(map[string][]byte)
 	for _, ms := range registryConf {
 		// fileShortPath is the file path within containerd's config directory
 		fileShortPath := fmt.Sprintf("%s\\hosts.toml", ms.source)
-		configFiles[fileShortPath] = []byte(ms.generateConfig())
+		// just use the first auth token because the disconnected CI job only has 1 auth token in the pull secret
+		configFiles[fileShortPath] = []byte(ms.generateConfig(authList[0]))
 	}
 	return configFiles, nil
+}
+
+type DockerConfigJSON struct {
+	Auths map[string]map[string]string `json:"auths"`
 }

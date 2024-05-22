@@ -298,7 +298,7 @@ func TestGenerateConfig(t *testing.T) {
 
 	for _, test := range testCases {
 		t.Run(test.name, func(t *testing.T) {
-			out := test.input.generateConfig()
+			out := test.input.generateConfig("")
 			assert.Equal(t, out, test.expectedOutput)
 		})
 	}
