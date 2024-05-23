@@ -11,6 +11,8 @@ import (
 	core "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	"github.com/openshift/windows-machine-config-operator/pkg/windows"
 )
 
 // mirror represents a mirrored image repo entry in a registry configuration file
@@ -212,8 +214,7 @@ func (ms *mirrorSet) generateConfig(secretsConfig dockerConfigJSON) string {
 		result += hostCapabilities
 		result += "\r\n"
 
-		// TODO: Remove this when we support TLS auth using CA certs - https://issues.redhat.com/browse/WINC-1291
-		result += "  skip_verify = true"
+		result += fmt.Sprintf("  ca = \"%s\"", strings.ReplaceAll(windows.TrustedCABundlePath, "\\", "\\\\"))
 		result += "\r\n"
 
 		// Extract the auth token if one exists for the mirror repo

@@ -19,6 +19,12 @@ const (
 
 	// ProxyCertsConfigMap is the name of the ConfigMap that holds the trusted CA bundle for a cluster-wide proxy
 	ProxyCertsConfigMap = "trusted-ca"
+
+	// MergedImageRegistryCAConfigMap is the name of the ConfigMap managed by MCO that holds both user-provided image
+	// registry certs as well as certs for the OpenShift cluster's internal image registry
+	MergedImageRegistryCAConfigMap = "merged-trusted-image-registry-ca"
+	// MergedImageRegistryCANamespace is the namespace holding the merged image registry CA ConfigMap
+	MergedImageRegistryCANamespace = "openshift-config-managed"
 )
 
 // GetCAsFromConfigMap extracts the given key from the ConfigMap object

@@ -189,8 +189,8 @@ func (r *ConfigMapReconciler) Reconcile(ctx context.Context,
 		return ctrl.Result{}, r.reconcileServices(ctx, configMap)
 	case wiparser.InstanceConfigMap:
 		return ctrl.Result{}, r.reconcileNodes(ctx, configMap)
-	case certificates.ProxyCertsConfigMap:
-		return ctrl.Result{}, r.reconcileProxyCerts(ctx, configMap)
+	case certificates.ProxyCertsConfigMap, certificates.MergedImageRegistryCAConfigMap:
+		return ctrl.Result{}, r.reconcileCACerts(ctx, configMap)
 	default:
 		// Unexpected configmap, log and return no error so we don't requeue
 		r.log.Error(fmt.Errorf("unexpected resource triggered reconcile"), "ConfigMap", req.NamespacedName)
@@ -417,8 +417,12 @@ func (r *ConfigMapReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
-// isValidConfigMap returns true if the ConfigMap object is the InstanceConfigMap or a WMCO-managed ConfigMap
+// isValidConfigMap returns true if the ConfigMap object is the InstanceConfigMap, image CA, or a WMCO-managed ConfigMap
 func (r *ConfigMapReconciler) isValidConfigMap(o client.Object) bool {
+	if o.GetNamespace() == certificates.MergedImageRegistryCANamespace &&
+		o.GetName() == certificates.MergedImageRegistryCAConfigMap {
+		return true
+	}
 	return o.GetNamespace() == r.watchNamespace &&
 		(o.GetName() == wiparser.InstanceConfigMap || o.GetName() == servicescm.Name ||
 			(r.proxyEnabled && o.GetName() == certificates.ProxyCertsConfigMap))
@@ -495,8 +499,8 @@ func (r *ConfigMapReconciler) createProxyCertsCM(ctx context.Context) error {
 	return nil
 }
 
-// reconcileProxyCerts ensures the resources that hold the CA are valid and available for import onto Windows instances
-func (r *ConfigMapReconciler) reconcileProxyCerts(ctx context.Context, trustedCA *core.ConfigMap) error {
+// reconcileCACerts ensures the resources that hold the CA are valid and available for import onto Windows instances
+func (r *ConfigMapReconciler) reconcileCACerts(ctx context.Context, trustedCA *core.ConfigMap) error {
 	if err := r.ensureProxyCertsCMIsValid(ctx, trustedCA.GetLabels()[InjectionRequestLabel]); err != nil {
 		return err
 	}
@@ -528,7 +532,7 @@ func (r *ConfigMapReconciler) ensureTrustedCABundleInNode(ctx context.Context, c
 	if err != nil {
 		return fmt.Errorf("failed to create new nodeconfig: %w", err)
 	}
-	return nc.UpdateTrustedCABundleFile(caData)
+	return nc.SyncTrustedCABundle()
 }
 
 // ensureProxyCertsCMIsValid ensures the trusted CA ConfigMap has the expected injection request. Patches the object if not.

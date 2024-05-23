@@ -156,10 +156,8 @@ func (nc *nodeConfig) Configure() error {
 	if err := nc.createRegistryConfigFiles(); err != nil {
 		return err
 	}
-	if cluster.IsProxyEnabled() {
-		if err := nc.ensureTrustedCABundle(); err != nil {
-			return err
-		}
+	if err := nc.SyncTrustedCABundle(); err != nil {
+		return err
 	}
 	wicdKC, err := nc.generateWICDKubeconfig()
 	if err != nil {
@@ -588,20 +586,36 @@ func (nc *nodeConfig) UpdateKubeletClientCA(contents []byte) error {
 	return nil
 }
 
-// ensureTrustedCABundle gets the trusted CA ConfigMap and ensures the cert bundle on the instance has up-to-date data
-func (nc *nodeConfig) ensureTrustedCABundle() error {
-	trustedCA := &core.ConfigMap{}
-	if err := nc.client.Get(context.TODO(), types.NamespacedName{Namespace: nc.wmcoNamespace,
-		Name: certificates.ProxyCertsConfigMap}, trustedCA); err != nil {
-		return fmt.Errorf("unable to get ConfigMap %s: %w", certificates.ProxyCertsConfigMap, err)
+// SyncTrustedCABundle builds the trusted CA ConfigMap from image registry certificates and the proxy trust bundle
+// and ensures the cert bundle on the instance has up-to-date data
+func (nc *nodeConfig) SyncTrustedCABundle() error {
+	imageRegistryCA := &core.ConfigMap{}
+	if err := nc.client.Get(context.TODO(), types.NamespacedName{Namespace: certificates.MergedImageRegistryCANamespace,
+		Name: certificates.MergedImageRegistryCAConfigMap}, imageRegistryCA); err != nil {
+		return fmt.Errorf("unable to get ConfigMap %s: %w", certificates.MergedImageRegistryCAConfigMap, err)
 	}
-	return nc.UpdateTrustedCABundleFile(trustedCA.Data)
+	caBundle := ""
+	for key, certData := range imageRegistryCA.Data {
+		// Accumulate the certs into a single bundle, adding a comment with the image repo name for observability
+		caBundle += fmt.Sprintf("# %s\n%s\n\n", strings.ReplaceAll(key, "..", ":"), certData)
+	}
+
+	if cluster.IsProxyEnabled() {
+		proxyCA := &core.ConfigMap{}
+		if err := nc.client.Get(context.TODO(), types.NamespacedName{Namespace: nc.wmcoNamespace,
+			Name: certificates.ProxyCertsConfigMap}, proxyCA); err != nil {
+			return fmt.Errorf("unable to get ConfigMap %s: %w", certificates.ProxyCertsConfigMap, err)
+		}
+		caBundle += proxyCA.Data[certificates.CABundleKey]
+	}
+
+	return nc.updateTrustedCABundleFile(caBundle)
 }
 
-// UpdateTrustedCABundleFile updates the file containing the trusted CA bundle in the Windows node, if needed
-func (nc *nodeConfig) UpdateTrustedCABundleFile(data map[string]string) error {
+// updateTrustedCABundleFile updates the file containing the trusted CA bundle in the Windows node, if needed
+func (nc *nodeConfig) updateTrustedCABundleFile(data string) error {
 	dir, fileName := windows.SplitPath(windows.TrustedCABundlePath)
-	return nc.Windows.EnsureFileContent([]byte(data[certificates.CABundleKey]), fileName, dir)
+	return nc.Windows.EnsureFileContent([]byte(data), fileName, dir)
 }
 
 // generateKubeconfig creates a kubeconfig spec with the certificate and token data from the given secret
