@@ -19,10 +19,12 @@ package controllers
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	mcfg "github.com/openshift/api/machineconfiguration/v1"
 	core "k8s.io/api/core/v1"
 	k8sapierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/types"
 	kubeTypes "k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -32,7 +34,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
+	"github.com/openshift/windows-machine-config-operator/pkg/certificates"
 	"github.com/openshift/windows-machine-config-operator/pkg/cluster"
+	"github.com/openshift/windows-machine-config-operator/pkg/nodeconfig"
 	"github.com/openshift/windows-machine-config-operator/pkg/secrets"
 	"github.com/openshift/windows-machine-config-operator/pkg/signer"
 )
@@ -85,6 +89,25 @@ func (r *ControllerConfigReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		return ctrl.Result{}, fmt.Errorf("unable to create signer from private key secret: %w", err)
 	}
 
+	caBundle := ""
+	for _, bundle := range cc.Spec.ImageRegistryBundleUserData {
+		// Accumulate the certs into a single bundle, adding a comment with the image repo name for observability
+		caBundle += fmt.Sprintf("# %s\n%s\n\n", strings.ReplaceAll(bundle.File, "..", ":"), bundle.Data)
+	}
+	for _, bundle := range cc.Spec.ImageRegistryBundleData {
+		// Accumulate the certs into a single bundle, adding a comment with the image repo name for observability
+		caBundle += fmt.Sprintf("# %s\n%s\n\n", strings.ReplaceAll(bundle.File, "..", ":"), bundle.Data)
+	}
+	// merge registry certs with proxy certs, if enabled
+	if cluster.IsProxyEnabled() {
+		proxyCA := &core.ConfigMap{}
+		if err := r.client.Get(context.TODO(), types.NamespacedName{Namespace: r.watchNamespace,
+			Name: certificates.ProxyCertsConfigMap}, proxyCA); err != nil {
+			return ctrl.Result{}, fmt.Errorf("unable to get ConfigMap %s: %w", certificates.ProxyCertsConfigMap, err)
+		}
+		caBundle += proxyCA.Data[certificates.CABundleKey]
+	}
+
 	// fetch all Windows nodes (Machine and BYOH instances)
 	winNodes := &core.NodeList{}
 	if err = r.client.List(ctx, winNodes, client.MatchingLabels{core.LabelOSStable: "windows"}); err != nil {
@@ -92,7 +115,23 @@ func (r *ControllerConfigReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	}
 	// loop Windows nodes and trigger kubelet CA update
 	for _, winNode := range winNodes.Items {
-		if err := r.updateKubeletCA(winNode, cc.Spec.KubeAPIServerServingCAData); err != nil {
+		winInstance, err := r.instanceFromNode(&winNode)
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("error creating instance for node %s: %w", winNode.Name, err)
+		}
+		nodeConfig, err := nodeconfig.NewNodeConfig(r.client, r.k8sclientset, r.clusterServiceCIDR,
+			r.watchNamespace, winInstance, r.signer, nil, nil, r.platform)
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("error creating nodeConfig for instance %s: %w", winInstance.Address, err)
+		}
+
+		// copy the current kubelet CA file content to the Windows instance
+		r.log.Info("updating kubelet CA client certificates in", "node", winNode.Name)
+		if err := nodeConfig.UpdateKubeletClientCA(cc.Spec.KubeAPIServerServingCAData); err != nil {
+			return ctrl.Result{}, fmt.Errorf("error updating kubelet CA certificate in node %s: %w", winNode.Name, err)
+		}
+
+		if err := nodeConfig.UpdateTrustedCABundleFile(caBundle); err != nil {
 			return ctrl.Result{}, fmt.Errorf("error updating kubelet CA certificate in node %s: %w", winNode.Name, err)
 		}
 	}

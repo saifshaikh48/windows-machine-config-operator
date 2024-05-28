@@ -124,21 +124,6 @@ func (r *instanceReconciler) instanceFromNode(node *core.Node) (*instance.Info, 
 	return instance.NewInfo(addr, username, "", false, node)
 }
 
-// updateKubeletCA updates the kubelet CA in the node, by copying the kubelet CA file content to the Windows instance
-func (r *instanceReconciler) updateKubeletCA(node core.Node, contents []byte) error {
-	winInstance, err := r.instanceFromNode(&node)
-	if err != nil {
-		return fmt.Errorf("error creating instance for node %s: %w", node.Name, err)
-	}
-	nodeConfig, err := nodeconfig.NewNodeConfig(r.client, r.k8sclientset, r.clusterServiceCIDR,
-		r.watchNamespace, winInstance, r.signer, nil, nil, r.platform)
-	if err != nil {
-		return fmt.Errorf("error creating nodeConfig for instance %s: %w", winInstance.Address, err)
-	}
-	r.log.Info("updating kubelet CA client certificates in", "node", node.Name)
-	return nodeConfig.UpdateKubeletClientCA(contents)
-}
-
 // GetAddress returns a non-ipv6 address that can be used to reach a Windows node. This can be either an ipv4
 // or dns address.
 func GetAddress(addresses []core.NodeAddress) (string, error) {

@@ -609,11 +609,11 @@ func (nc *nodeConfig) SyncTrustedCABundle() error {
 		caBundle += proxyCA.Data[certificates.CABundleKey]
 	}
 
-	return nc.updateTrustedCABundleFile(caBundle)
+	return nc.UpdateTrustedCABundleFile(caBundle)
 }
 
-// updateTrustedCABundleFile updates the file containing the trusted CA bundle in the Windows node, if needed
-func (nc *nodeConfig) updateTrustedCABundleFile(data string) error {
+// UpdateTrustedCABundleFile updates the file containing the trusted CA bundle in the Windows node, if needed
+func (nc *nodeConfig) UpdateTrustedCABundleFile(data string) error {
 	dir, fileName := windows.SplitPath(windows.TrustedCABundlePath)
 	return nc.Windows.EnsureFileContent([]byte(data), fileName, dir)
 }
