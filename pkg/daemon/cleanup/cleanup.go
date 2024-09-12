@@ -59,14 +59,38 @@ func Deconfigure(cfg *rest.Config, ctx context.Context, configMapNamespace strin
 		klog.Exitf("could not create service manager: %s", err.Error())
 	}
 	defer svcMgr.Disconnect()
-	mergedCMData, err := getMergedCMData(ctx, directClient, configMapNamespace, node)
+
+	latestCM, err := servicescm.GetLatest(directClient, ctx, configMapNamespace)
+	if err != nil {
+		return fmt.Errorf("cannot get latest services ConfigMap from namespace %s: %w", configMapNamespace, err)
+	}
+	// to start, our source of truth for cleanup data will be the latest services CM.
+	// This will only be modified if if the instance is not already configured by the latest version
+	dataToCleanup, err := servicescm.Parse(latestCM.Data)
 	if err != nil {
 		return err
 	}
-	if err = removeServices(svcMgr, mergedCMData.Services); err != nil {
+
+	if versionCM, err := getVersionedCM(ctx, directClient, configMapNamespace, node); err == nil {
+		// If the CMs do not refer to the same version, merge the data
+		if versionCM.GetName() != latestCM.GetName() {
+			versionCMData, err := servicescm.Parse(versionCM.Data)
+			if err != nil {
+				return err
+			}
+			mergedServices := mergeServices(dataToCleanup.Services, versionCMData.Services)
+			mergedEnvVars := merge(dataToCleanup.WatchedEnvironmentVars, versionCMData.WatchedEnvironmentVars)
+			dataToCleanup = &servicescm.Data{Services: mergedServices, WatchedEnvironmentVars: mergedEnvVars}
+		}
+	} else {
+		klog.Warningf("could not get services ConfigMap associated with node version annotation: %s", err.Error())
+	}
+
+	if err = removeServices(svcMgr, dataToCleanup.Services); err != nil {
 		return err
 	}
-	envVarsRemoved, err := ensureEnvVarsAreRemoved(mergedCMData.WatchedEnvironmentVars)
+
+	envVarsRemoved, err := ensureEnvVarsAreRemoved(dataToCleanup.WatchedEnvironmentVars)
 	if err != nil {
 		return err
 	}
@@ -91,58 +115,24 @@ func Deconfigure(cfg *rest.Config, ctx context.Context, configMapNamespace strin
 	return nil
 }
 
-// getMergedCMData attempts to get the latest and the version CM data specified by the node's version annotation
-// It returns the merged CM Data containing services and the watched environment variables
-func getMergedCMData(ctx context.Context, cli client.Client,
-	configMapNamespace string, node *core.Node) (*servicescm.Data, error) {
-	// get data from the latest services ConfigMap
-	latestCM, err := servicescm.GetLatest(cli, ctx, configMapNamespace)
-	if err != nil {
-		return nil, fmt.Errorf("cannot get latest services ConfigMap from namespace %s: %w",
-			configMapNamespace, err)
+// getVersionedCM attempts to the version CM specified by the node's version annotation
+func getVersionedCM(ctx context.Context, cli client.Client, configMapNamespace string,
+	node *core.Node) (*core.ConfigMap, error) {
+	var versionCM *core.ConfigMap
+	if node == nil {
+		return versionCM, fmt.Errorf("no node object present")
 	}
-	latestCMData, err := servicescm.Parse(latestCM.Data)
-	if err != nil {
-		return nil, err
+	version, present := node.Annotations[metadata.VersionAnnotation]
+	if !present {
+		return versionCM, fmt.Errorf("node is missing version annotation")
 	}
 
 	// attempt to get the ConfigMap specified by the version annotation
-	var versionCM core.ConfigMap
-	var versionCMData *servicescm.Data
-	err = func() error {
-		if node == nil {
-			return fmt.Errorf("no node object present")
-		}
-		version, present := node.Annotations[metadata.VersionAnnotation]
-		if !present {
-			return fmt.Errorf("node is missing version annotation")
-		}
-		err = cli.Get(ctx, client.ObjectKey{Namespace: configMapNamespace, Name: servicescm.NamePrefix + version},
-			&versionCM)
-		if err != nil {
-			return err
-		}
-		versionCMData, err = servicescm.Parse(versionCM.Data)
-		if err != nil {
-			return err
-		}
-		return nil
-	}()
+	err := cli.Get(ctx, client.ObjectKey{Namespace: configMapNamespace, Name: servicescm.NamePrefix + version}, versionCM)
 	if err != nil {
-		klog.Infof("error getting services ConfigMap associated with version annotation, "+
-			"falling back to use latest services ConfigMap: %s", err)
-		return latestCMData, nil
+		return versionCM, err
 	}
-	// If the instance was configured using latestCM, return that
-	if versionCM.GetName() == latestCM.GetName() {
-		return latestCMData, nil
-	}
-	mergedServices := mergeServices(latestCMData.Services, versionCMData.Services)
-	mergedEnvVars := merge(latestCMData.WatchedEnvironmentVars, versionCMData.WatchedEnvironmentVars)
-	return &servicescm.Data{
-		Services:               mergedServices,
-		WatchedEnvironmentVars: mergedEnvVars,
-	}, nil
+	return versionCM, nil
 }
 
 // mergeServices combines the list of services, prioritizing the data given by s1
