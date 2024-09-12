@@ -21,6 +21,7 @@ package cleanup
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	core "k8s.io/api/core/v1"
 	"k8s.io/client-go/rest"
@@ -34,6 +35,7 @@ import (
 	"github.com/openshift/windows-machine-config-operator/pkg/daemon/powershell"
 	"github.com/openshift/windows-machine-config-operator/pkg/metadata"
 	"github.com/openshift/windows-machine-config-operator/pkg/servicescm"
+	"github.com/openshift/windows-machine-config-operator/pkg/windows"
 )
 
 // Deconfigure removes all managed services from the instance and the version annotation, if it has an associated node.
@@ -71,6 +73,10 @@ func Deconfigure(cfg *rest.Config, ctx context.Context, configMapNamespace strin
 		return err
 	}
 
+	// to start, we assume that we'll need to do best effort cleanup.
+	// This is only be modified if the instance is already configured by the latest version
+	bestEffort := true
+
 	if versionCM, err := getVersionedCM(ctx, directClient, configMapNamespace, node); err == nil {
 		// If the CMs do not refer to the same version, merge the data
 		if versionCM.GetName() != latestCM.GetName() {
@@ -81,12 +87,14 @@ func Deconfigure(cfg *rest.Config, ctx context.Context, configMapNamespace strin
 			mergedServices := mergeServices(dataToCleanup.Services, versionCMData.Services)
 			mergedEnvVars := merge(dataToCleanup.WatchedEnvironmentVars, versionCMData.WatchedEnvironmentVars)
 			dataToCleanup = &servicescm.Data{Services: mergedServices, WatchedEnvironmentVars: mergedEnvVars}
+		} else {
+			bestEffort = false
 		}
 	} else {
 		klog.Warningf("could not get services ConfigMap associated with node version annotation: %s", err.Error())
 	}
 
-	if err = removeServices(svcMgr, dataToCleanup.Services); err != nil {
+	if err = removeServices(svcMgr, dataToCleanup.Services, bestEffort); err != nil {
 		return err
 	}
 
@@ -171,7 +179,8 @@ func merge(e1, e2 []string) []string {
 }
 
 // removeServices uses the given manager to remove all the given Windows services from this instance.
-func removeServices(svcMgr manager.Manager, services []servicescm.Service) error {
+// The bestEffort flag is used to also remove OpenShift managed services that are not in the given Service slice.
+func removeServices(svcMgr manager.Manager, services []servicescm.Service, bestEffort bool) error {
 	// Build up log message and failures
 	servicesRemoved := []string{}
 	failedRemovals := []error{}
@@ -184,6 +193,34 @@ func removeServices(svcMgr manager.Manager, services []servicescm.Service) error
 			servicesRemoved = append(servicesRemoved, service.Name)
 		}
 	}
+
+	if bestEffort {
+		// Remove all services that were created through WICD, even if they are no longer in the services ConfigMap spec
+		existingSvcs, err := svcMgr.GetServices()
+		if err != nil {
+			return fmt.Errorf("could not determine existing Windows services: %w", err)
+		}
+		for name := range existingSvcs {
+			winSvcObj, err := svcMgr.OpenService(name)
+			if err != nil {
+				// WICD is not able to access some system services. If we hit this, it is expected
+				continue
+			}
+			config, err := winSvcObj.Config()
+			if err != nil {
+				return err
+			}
+			if strings.Contains(config.Description, windows.ManagedTag) {
+				if err := svcMgr.DeleteService(name); err != nil {
+					failedRemovals = append(failedRemovals, err)
+					winSvcObj.Close()
+				} else {
+					servicesRemoved = append(servicesRemoved, name)
+				}
+			}
+		}
+	}
+
 	klog.Infof("removed services: %q", servicesRemoved)
 	if len(failedRemovals) > 0 {
 		return fmt.Errorf("%#v", failedRemovals)
